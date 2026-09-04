@@ -1,30 +1,39 @@
 #!/usr/bin/env bash
-# Показывает последние выполнения сценария из базы n8n.
-# Важно: база в режиме WAL, поэтому копировать нужно вместе с -wal,
-# иначе видно устаревший снимок на момент последнего чекпоинта.
+# Выполнения сценариев и сводка по данным бота — прямо из Postgres.
+#
+# Использование:
+#   scripts/n8n-executions.sh [local|prod] [N]       последние N выполнений
+#   scripts/n8n-executions.sh [local|prod] stats     сводка по данным бота
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-for f in database.sqlite database.sqlite-wal database.sqlite-shm; do
-  docker cp "max-n8n:/home/node/.n8n/$f" "$TMP/" 2>/dev/null || true
-done
+ENVIRONMENT="${1:-local}"
+ARG="${2:-15}"
+COMPOSE_FILE="docker/docker-compose.${ENVIRONMENT}.yml"
+[ -f "$COMPOSE_FILE" ] || { echo "Нет файла $COMPOSE_FILE" >&2; exit 1; }
+set -a; . ./.env; set +a
 
-python3 - "$TMP/database.sqlite" "${1:-10}" <<'PY'
-import sqlite3, sys, json
-db, limit = sys.argv[1], int(sys.argv[2])
-c = sqlite3.connect(db)
-rows = list(c.execute('select id,status,startedAt from execution_entity order by id desc limit ?', (limit,)))
-print(f'{"id":>5}  {"статус":<9} {"начало":<24} что произошло')
-for i, st, t in rows:
-    d = c.execute('select data from execution_data where executionId=?', (i,)).fetchone()
-    what = 'пустой опрос'
-    if d:
-        arr = json.loads(d[0])
-        def res(v):
-            while isinstance(v, str) and v.isdigit() and int(v) < len(arr): v = arr[int(v)]
-            return v
-        paths = {str(res(e['api_path'])) for e in arr if isinstance(e, dict) and 'api_path' in e}
-        if paths: what = 'отправка в MAX: ' + ', '.join(sorted(paths))
-    print(f'{i:>5}  {st:<9} {t:<24} {what}')
-PY
+DC=(docker compose --env-file .env -f "$COMPOSE_FILE")
+psql_n8n() { "${DC[@]}" exec -T db psql -X -U "$POSTGRES_USER" -d "${DB_NAME:-n8n}" "$@"; }
+psql_app() { "${DC[@]}" exec -T db psql -X -U "$POSTGRES_USER" -d "${APP_DB_NAME:-maxbot}" "$@"; }
+
+if [ "$ARG" = "stats" ]; then
+  psql_app \
+    -c "select count(*) as пользователей, max(last_seen) as последняя_активность from bot_users;" \
+    -c "select update_type as тип, count(*) as событий from bot_events group by 1 order by 2 desc;" \
+    -c "select marker, lease_until > now() as опрос_идёт, updated_at from bot_state;" \
+    -c "select count(*) as ошибок_отправки, max(created_at) as последняя from bot_send_failures;"
+  exit 0
+fi
+
+psql_n8n -c "
+select e.id,
+       w.name          as сценарий,
+       e.status        as статус,
+       e.mode          as режим,
+       e.\"startedAt\"  as начало,
+       round(extract(epoch from (e.\"stoppedAt\" - e.\"startedAt\"))::numeric, 2) as сек
+  from execution_entity e
+  join workflow_entity w on w.id = e.\"workflowId\"
+ order by e.id desc
+ limit ${ARG};"

@@ -1,0 +1,166 @@
+# Прод-окружение: n8n в queue mode (main + worker) + postgres + redis.
+# Запуск: make up-prod
+#
+# Приём апдейтов — вебхуком: main держит HTTP-маршрут и расписания, worker-ы
+# исполняют сценарии. Порт наружу не пробрасывается: TLS терминирует внешний
+# reverse-proxy в maxbots-network (там же живут banword-max-bot и cult-max-bot).
+name: max-n8n
+
+x-n8n-common: &n8n-common
+  image: ${N8N_IMAGE:-docker.n8n.io/n8nio/n8n:2.37.10}
+  env_file:
+    - ../.env
+  restart: unless-stopped
+  environment: &n8n-common-env
+    DB_TYPE: postgresdb
+    DB_POSTGRESDB_HOST: db
+    DB_POSTGRESDB_PORT: 5432
+    DB_POSTGRESDB_DATABASE: ${DB_NAME:-n8n}
+    DB_POSTGRESDB_USER: ${POSTGRES_USER:?POSTGRES_USER не задан в .env}
+    DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан в .env}
+    DB_POSTGRESDB_POOL_SIZE: ${DB_POSTGRESDB_POOL_SIZE:-10}
+    # Один и тот же ключ обязан быть у main и у всех worker-ов, иначе worker
+    # не расшифрует credentials и упадёт на первом же обращении к Postgres.
+    N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?N8N_ENCRYPTION_KEY не задан в .env}
+    EXECUTIONS_MODE: queue
+    QUEUE_BULL_REDIS_HOST: redis
+    QUEUE_BULL_REDIS_PORT: 6379
+    QUEUE_BULL_REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    # Сколько ждать освобождения очереди при остановке, прежде чем убивать.
+    QUEUE_WORKER_TIMEOUT: 30
+    GENERIC_TIMEZONE: ${TZ:-Europe/Moscow}
+    TZ: ${TZ:-Europe/Moscow}
+    N8N_LOG_LEVEL: ${LOG_LEVEL:-info}
+    N8N_DIAGNOSTICS_ENABLED: "false"
+    N8N_UNVERIFIED_PACKAGES_ENABLED: "false"
+    N8N_RUNNERS_TASK_TIMEOUT: "60"
+    N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+    NODE_EXTRA_CA_CERTS: ${MAX_CA_BUNDLE:-}
+    EXECUTIONS_DATA_PRUNE: ${EXECUTIONS_DATA_PRUNE:-true}
+    EXECUTIONS_DATA_MAX_AGE: ${EXECUTIONS_DATA_MAX_AGE:-168}
+  volumes:
+    - ../certs:/certs:ro
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  # Всплеск вебхуков упирается в soft-лимит демона (часто 1024).
+  ulimits:
+    nofile:
+      soft: 65536
+      hard: 65536
+
+services:
+  db:
+    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER не задан в .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан в .env}
+      POSTGRES_DB: ${POSTGRES_DB:-n8n}
+    volumes:
+      - pgdata_prod:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - max-n8n-backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB:-n8n}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    mem_limit: 1g
+    mem_reservation: 512m
+    cpus: 1.0
+    pids_limit: 128
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7-alpine}
+    # appendonly: очередь переживает рестарт, принятые апдейты не теряются.
+    command: >-
+      redis-server --appendonly yes
+      ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}
+    volumes:
+      - redisdata_prod:/data
+    restart: unless-stopped
+    networks:
+      - max-n8n-backend
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ${REDIS_PASSWORD:+-a ${REDIS_PASSWORD}} ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    mem_limit: 512m
+    cpus: 0.5
+    pids_limit: 64
+
+  n8n:
+    <<: *n8n-common
+    environment:
+      <<: *n8n-common-env
+      # Публичный адрес: от него n8n строит URL вебхука, который мы отдаём MAX.
+      N8N_HOST: ${N8N_HOST:?N8N_HOST не задан в .env}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: https
+      N8N_WEBHOOK_URL: ${WEBHOOK_HOST:?WEBHOOK_HOST не задан в .env}
+      N8N_PROXY_HOPS: ${N8N_PROXY_HOPS:-1}
+    volumes:
+      - n8n_data_prod:/home/node/.n8n
+      - ../workflows:/workflows:ro
+      - ../certs:/certs:ro
+    networks:
+      max-n8n-backend: {}
+      maxbots-network:
+        aliases:
+          - max-n8n
+    expose:
+      - "5678"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:5678/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: 2g
+    mem_reservation: 1g
+    cpus: 1.5
+    pids_limit: 256
+
+  worker:
+    <<: *n8n-common
+    command: worker --concurrency=${N8N_CONCURRENCY:-10}
+    deploy:
+      replicas: ${N8N_WORKER_REPLICAS:-1}
+    networks:
+      # Сценарии исполняет worker, значит именно ему нужен выход к Bot API MAX.
+      # Только max-n8n-backend не годится: сеть internal, из неё нет ни DNS,
+      # ни исходящего трафика — запросы к MAX висят до таймаута, а выполнения
+      # остаются в статусе running.
+      max-n8n-backend: {}
+      maxbots-network: {}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      n8n:
+        condition: service_started
+    mem_limit: 2g
+    mem_reservation: 1g
+    cpus: 1.5
+    pids_limit: 256
+
+networks:
+  # Общая сеть с остальными ботами MAX и внешним reverse-proxy.
+  # Создать один раз: docker network create maxbots-network
+  maxbots-network:
+    external: true
+    name: maxbots-network
+
+  # Внутренняя: postgres, redis и worker-ы наружу не смотрят.
+  max-n8n-backend:
+    internal: true
+
+volumes:
+  pgdata_prod:
+  redisdata_prod:
+  n8n_data_prod:

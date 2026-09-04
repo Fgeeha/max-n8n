@@ -1,6 +1,16 @@
-# Секреты: токен бота MAX
+# Секреты: токен бота MAX, пароль Postgres, ключ шифрования n8n
 .env
 .env.local
 
 # Выгрузки из n8n (могут содержать креды из базы n8n)
 workflows/export.json
+
+# Дампы БД
+*.sql
+*.dump
+!db/migrations/*.sql
+
+# Сертификаты выкачиваются локально, в репозиторий не попадают
+certs/*
+!certs/README.md
+!certs/.gitkeep

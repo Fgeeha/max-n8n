@@ -1,0 +1,184 @@
+{
+  "id": "maxbothook000001",
+  "versionId": "00000000-0000-4000-8000-othook000001",
+  "name": "MAX bot — источник: вебхук",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "max-updates",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": false
+        }
+      },
+      "id": "Вебхук MAX",
+      "name": "Вебхук MAX",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -720,
+        300
+      ],
+      "webhookId": "maxupdates000001"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "leftValue": "={{ $json.headers['x-max-bot-api-secret'] ?? '' }}",
+              "rightValue": "={{ $env.WEBHOOK_SECRET }}"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "Проверить секрет",
+      "name": "Проверить секрет",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "ok",
+        "options": {}
+      },
+      "id": "200 OK",
+      "name": "200 OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -240,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "unauthorized",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "401",
+      "name": "401",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -240,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Приводит апдейт MAX к одной плоской структуре независимо от того, пришёл он\n// long polling-ом или вебхуком. Дальше вниз по сценарию идёт только эта форма.\n//\n// dedup_key — ключ идемпотентности. В webhook-режиме MAX повторяет доставку\n// при таймауте, и без него бот отвечал бы дважды. Для сообщения это mid,\n// для нажатия кнопки — callback_id.\nconst ONLY_DIALOGS = String($env.ONLY_DIALOGS ?? 'true') !== 'false';\n\nfunction normalize(u) {\n  const msg = u.message ?? {};\n  const rec = msg.recipient ?? {};\n  const cb = u.callback ?? {};\n  const sender = cb.user ?? msg.sender ?? {};\n\n  // Групповые чаты отсекаются здесь. Боевой токен состоит в реальных чатах,\n  // поэтому по умолчанию бот отвечает только в личке.\n  if (ONLY_DIALOGS && rec.chat_type && rec.chat_type !== 'dialog') return null;\n  if (sender.is_bot) return null;\n\n  const base = {\n    update_type: u.update_type,\n    chat_id: rec.chat_id ?? null,\n    chat_type: rec.chat_type ?? null,\n    user_id: rec.user_id ?? sender.user_id ?? null,\n    name: sender.first_name ?? sender.name ?? 'друг',\n    username: sender.username ?? null,\n    raw: u,\n  };\n\n  if (u.update_type === 'message_created') {\n    return { ...base, kind: 'message', text: (msg.body?.text ?? '').trim(),\n             payload: null, callback_id: null,\n             dedup_key: 'msg:' + (msg.body?.mid ?? `${base.user_id}:${u.timestamp}`) };\n  }\n  if (u.update_type === 'message_callback') {\n    return { ...base, kind: 'callback', text: '', payload: cb.payload ?? '',\n             callback_id: cb.callback_id ?? null,\n             dedup_key: 'cb:' + (cb.callback_id ?? `${base.user_id}:${u.timestamp}`) };\n  }\n  if (u.update_type === 'bot_started') {\n    // Открытие диалога трактуем как /start.\n    return { ...base, kind: 'message', text: '/start', payload: null, callback_id: null,\n             dedup_key: 'start:' + `${base.user_id}:${u.timestamp}` };\n  }\n  return null;\n}\n\n// Вход: тело POST-запроса от MAX. Один апдейт на запрос.\nconst body = $input.first().json?.body ?? {};\nconst one = normalize(body);\nreturn one ? [{ json: one }] : [];\n"
+      },
+      "id": "Разобрать апдейт",
+      "name": "Разобрать апдейт",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "maxbotcore000001",
+          "mode": "id"
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "id": "Передать в движок",
+      "name": "Передать в движок",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        180
+      ]
+    }
+  ],
+  "connections": {
+    "Вебхук MAX": {
+      "main": [
+        [
+          {
+            "node": "Проверить секрет",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Проверить секрет": {
+      "main": [
+        [
+          {
+            "node": "200 OK",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "401",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "200 OK": {
+      "main": [
+        [
+          {
+            "node": "Разобрать апдейт",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Разобрать апдейт": {
+      "main": [
+        [
+          {
+            "node": "Передать в движок",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "pinData": {},
+  "tags": []
+}

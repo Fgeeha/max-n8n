@@ -1,0 +1,236 @@
+{
+  "id": "maxbotpoll000001",
+  "versionId": "00000000-0000-4000-8000-otpoll000001",
+  "name": "MAX bot — источник: long polling",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "seconds",
+              "secondsInterval": 10
+            }
+          ]
+        }
+      },
+      "id": "Каждые N секунд",
+      "name": "Каждые N секунд",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -760,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE bot_state\n   SET lease_until = now() + interval '60 seconds',\n       updated_at  = now()\n WHERE id = 1\n   AND lease_until < now()\nRETURNING marker;",
+        "options": {}
+      },
+      "id": "Взять аренду на опрос",
+      "name": "Взять аренду на опрос",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -520,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "maxbotpg000000001",
+          "name": "maxbot-postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.MAX_API_BASE_URL }}/updates",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "marker",
+              "value": "={{ $json.marker ?? '' }}"
+            },
+            {
+              "name": "limit",
+              "value": "100"
+            },
+            {
+              "name": "timeout",
+              "value": "0"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $env.MAX_BOT_TOKEN }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "GET /updates",
+      "name": "GET /updates",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -280,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Приводит апдейт MAX к одной плоской структуре независимо от того, пришёл он\n// long polling-ом или вебхуком. Дальше вниз по сценарию идёт только эта форма.\n//\n// dedup_key — ключ идемпотентности. В webhook-режиме MAX повторяет доставку\n// при таймауте, и без него бот отвечал бы дважды. Для сообщения это mid,\n// для нажатия кнопки — callback_id.\nconst ONLY_DIALOGS = String($env.ONLY_DIALOGS ?? 'true') !== 'false';\n\nfunction normalize(u) {\n  const msg = u.message ?? {};\n  const rec = msg.recipient ?? {};\n  const cb = u.callback ?? {};\n  const sender = cb.user ?? msg.sender ?? {};\n\n  // Групповые чаты отсекаются здесь. Боевой токен состоит в реальных чатах,\n  // поэтому по умолчанию бот отвечает только в личке.\n  if (ONLY_DIALOGS && rec.chat_type && rec.chat_type !== 'dialog') return null;\n  if (sender.is_bot) return null;\n\n  const base = {\n    update_type: u.update_type,\n    chat_id: rec.chat_id ?? null,\n    chat_type: rec.chat_type ?? null,\n    user_id: rec.user_id ?? sender.user_id ?? null,\n    name: sender.first_name ?? sender.name ?? 'друг',\n    username: sender.username ?? null,\n    raw: u,\n  };\n\n  if (u.update_type === 'message_created') {\n    return { ...base, kind: 'message', text: (msg.body?.text ?? '').trim(),\n             payload: null, callback_id: null,\n             dedup_key: 'msg:' + (msg.body?.mid ?? `${base.user_id}:${u.timestamp}`) };\n  }\n  if (u.update_type === 'message_callback') {\n    return { ...base, kind: 'callback', text: '', payload: cb.payload ?? '',\n             callback_id: cb.callback_id ?? null,\n             dedup_key: 'cb:' + (cb.callback_id ?? `${base.user_id}:${u.timestamp}`) };\n  }\n  if (u.update_type === 'bot_started') {\n    // Открытие диалога трактуем как /start.\n    return { ...base, kind: 'message', text: '/start', payload: null, callback_id: null,\n             dedup_key: 'start:' + `${base.user_id}:${u.timestamp}` };\n  }\n  return null;\n}\n\n// Вход: ответ GET /updates.\nconst res = $input.first().json ?? {};\nreturn (res.updates ?? []).map(normalize).filter(Boolean).map((json) => ({ json }));\n"
+      },
+      "id": "Разобрать updates",
+      "name": "Разобрать updates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -20,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "maxbotcore000001",
+          "mode": "id"
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "Передать в движок",
+      "name": "Передать в движок",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE bot_state\n   SET marker      = COALESCE($1::bigint, marker),\n       lease_until = now() - interval '1 second',\n       updated_at  = now()\n WHERE id = 1;",
+        "options": {
+          "queryReplacement": "={{ [$json.marker ?? null] }}"
+        }
+      },
+      "id": "Сохранить marker",
+      "name": "Сохранить marker",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -20,
+        460
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "maxbotpg000000001",
+          "name": "maxbot-postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE bot_state\n   SET lease_until = now() - interval '1 second',\n       updated_at  = now()\n WHERE id = 1;",
+        "options": {}
+      },
+      "id": "Снять аренду после ошибки",
+      "name": "Снять аренду после ошибки",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -20,
+        620
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "maxbotpg000000001",
+          "name": "maxbot-postgres"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Каждые N секунд": {
+      "main": [
+        [
+          {
+            "node": "Взять аренду на опрос",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Взять аренду на опрос": {
+      "main": [
+        [
+          {
+            "node": "GET /updates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET /updates": {
+      "main": [
+        [
+          {
+            "node": "Разобрать updates",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Сохранить marker",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Снять аренду после ошибки",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Разобрать updates": {
+      "main": [
+        [
+          {
+            "node": "Передать в движок",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "pinData": {},
+  "tags": []
+}

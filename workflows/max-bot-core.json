@@ -1,0 +1,384 @@
+{
+  "id": "maxbotcore000001",
+  "versionId": "00000000-0000-4000-8000-otcore000001",
+  "name": "MAX bot — движок (меню и отправка)",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "Событие от источника",
+      "name": "Событие от источника",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -720,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO bot_events\n    (dedup_key, update_type, user_id, chat_id, chat_type, text, payload, raw)\nVALUES\n    ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)\nON CONFLICT (dedup_key) DO NOTHING\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [$json.dedup_key, $json.update_type, $json.user_id, $json.chat_id, $json.chat_type, $json.text, $json.payload, JSON.stringify($json.raw)] }}"
+        }
+      },
+      "id": "Записать событие",
+      "name": "Записать событие",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -480,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "maxbotpg000000001",
+          "name": "maxbot-postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.id !== undefined }}",
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "Новое событие?",
+      "name": "Новое событие?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -360,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO bot_users (user_id, chat_id, name, username, events_count)\nVALUES ($1, $2, $3, $4, 1)\nON CONFLICT (user_id) DO UPDATE\n   SET chat_id      = COALESCE(EXCLUDED.chat_id, bot_users.chat_id),\n       name         = EXCLUDED.name,\n       username     = COALESCE(EXCLUDED.username, bot_users.username),\n       last_seen    = now(),\n       events_count = bot_users.events_count + 1\nRETURNING user_id;",
+        "options": {
+          "queryReplacement": "={{ [$('Событие от источника').item.json.user_id, $('Событие от источника').item.json.chat_id, $('Событие от источника').item.json.name, $('Событие от источника').item.json.username] }}"
+        }
+      },
+      "id": "Обновить пользователя",
+      "name": "Обновить пользователя",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -160,
+        220
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "maxbotpg000000001",
+          "name": "maxbot-postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Ноды Postgres отдают результат запроса, а не событие.\n// Возвращаем исходное событие, чтобы маршрутизация работала с ним.\nreturn [{ json: $('Событие от источника').first().json }];"
+      },
+      "id": "Вернуть событие",
+      "name": "Вернуть событие",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        60,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "operator": {
+                      "type": "string",
+                      "operation": "startsWith"
+                    },
+                    "leftValue": "={{ $json.text }}",
+                    "rightValue": "эхо "
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "эхо"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    },
+                    "leftValue": "={{ true }}",
+                    "rightValue": ""
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "меню"
+            }
+          ]
+        },
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "Маршрут сценария",
+      "name": "Маршрут сценария",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        280,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Ветка «эхо»: отдельный сценарий, не связанный с меню. Показывает, что\n// ветвление добавляется нодой Switch без правки остального графа.\nconst ev = $json;\nreturn [{\n  json: {\n    screen_key: 'echo',\n    api_path: 'messages',\n    api_query: { chat_id: String(ev.chat_id) },\n    body: {\n      text: '🔁 Вы написали: ' + ev.text.replace(/^эхо\\s+/i, ''),\n      format: 'markdown',\n      attachments: [{ type: 'inline_keyboard', payload: {\n        buttons: [[{ type: 'callback', text: '⬅️ В меню', payload: 'main' }]] } }],\n    },\n  },\n}];\n"
+      },
+      "id": "Эхо-ответ",
+      "name": "Эхо-ответ",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// ЕДИНСТВЕННОЕ место, где описано меню бота.\n// Чтобы поменять кнопки — правьте объект MENU прямо в редакторе n8n и нажмите\n// Save. Рестарт контейнера не нужен, изменения подхватятся со следующего события.\n//\n// Типы кнопок MAX: callback | link | request_contact | request_geo_location |\n//                  message | open_app | clipboard\nconst MENU = {\n  main: {\n    text: 'Привет, {name}! 👋\\nЭто демо-бот, собранный целиком в n8n.\\n\\nВыберите раздел:',\n    buttons: [\n      [\n        { type: 'callback', text: '📋 Каталог', payload: 'catalog' },\n        { type: 'callback', text: 'ℹ️ О боте', payload: 'about' },\n      ],\n      [{ type: 'callback', text: '📞 Контакты', payload: 'contacts' }],\n      [{ type: 'link', text: '🌐 Документация MAX', url: 'https://dev.max.ru/docs' }],\n    ],\n  },\n  catalog: {\n    text: '📋 *Каталог*\\n\\nВыберите товар:',\n    buttons: [\n      [\n        { type: 'callback', text: 'Товар A — 100 ₽', payload: 'item:a' },\n        { type: 'callback', text: 'Товар B — 250 ₽', payload: 'item:b' },\n      ],\n      [{ type: 'callback', text: '⬅️ Назад', payload: 'main' }],\n    ],\n  },\n  about: {\n    text: 'ℹ️ *О боте*\\n\\nСценарий целиком живёт в n8n: приём апдейтов MAX, разбор, меню и отправка ответов. Состояние — в Postgres.',\n    buttons: [[{ type: 'callback', text: '⬅️ Назад', payload: 'main' }]],\n  },\n  contacts: {\n    text: '📞 *Контакты*\\n\\nОставьте телефон, и мы перезвоним.',\n    buttons: [\n      [{ type: 'request_contact', text: '📱 Отправить контакт' }],\n      [{ type: 'callback', text: '⬅️ Назад', payload: 'main' }],\n    ],\n  },\n};\n\n// Динамический экран: содержимое строится на лету из payload.\nfunction screen(key) {\n  if (key.startsWith('item:')) {\n    const code = key.slice(5).toUpperCase();\n    return {\n      text: `✅ Товар *${code}* добавлен в корзину.\\nВремя: ${new Date().toLocaleString('ru-RU', { timeZone: $env.TZ || 'Europe/Moscow' })}`,\n      buttons: [[{ type: 'callback', text: '⬅️ В каталог', payload: 'catalog' }]],\n    };\n  }\n  return MENU[key] ?? MENU.main;\n}\n\nconst ev = $json;\nconst key = ev.kind === 'callback' ? (ev.payload || 'main') : 'main';\nconst scr = screen(key);\n\nconst body = {\n  text: scr.text.replace('{name}', ev.name),\n  format: 'markdown',\n  attachments: [{ type: 'inline_keyboard', payload: { buttons: scr.buttons } }],\n};\n\n// Нажатие кнопки отвечаем через /answers — сообщение меняется на месте.\n// Обычное сообщение отправляем через /messages.\nif (ev.kind === 'callback' && ev.callback_id) {\n  return [{ json: { screen_key: key, api_path: 'answers',\n                    api_query: { callback_id: ev.callback_id },\n                    body: { message: body } } }];\n}\nreturn [{ json: { screen_key: key, api_path: 'messages',\n                  api_query: { chat_id: String(ev.chat_id) }, body } }];\n"
+      },
+      "id": "Меню",
+      "name": "Меню",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MAX_API_BASE_URL }}/{{ $json.api_path }}",
+        "sendQuery": true,
+        "specifyQuery": "json",
+        "jsonQuery": "={{ JSON.stringify($json.api_query) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $env.MAX_BOT_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          }
+        }
+      },
+      "id": "POST в MAX API",
+      "name": "POST в MAX API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        780,
+        220
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO bot_send_failures (api_path, user_id, chat_id, status_code, error, body)\nVALUES ($1, $2, $3, $4, $5, $6::jsonb);",
+        "options": {
+          "queryReplacement": "={{ [$json.api_path || 'unknown', $('Событие от источника').item.json.user_id, $('Событие от источника').item.json.chat_id, $json.error?.status ?? $json.error?.httpCode ?? null, ($json.error?.message ?? $json.message ?? 'unknown').toString().slice(0, 2000), JSON.stringify($json.error ?? $json)] }}"
+        }
+      },
+      "id": "Записать ошибку отправки",
+      "name": "Записать ошибку отправки",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1040,
+        380
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "maxbotpg000000001",
+          "name": "maxbot-postgres"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Событие от источника": {
+      "main": [
+        [
+          {
+            "node": "Записать событие",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Записать событие": {
+      "main": [
+        [
+          {
+            "node": "Новое событие?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Новое событие?": {
+      "main": [
+        [
+          {
+            "node": "Обновить пользователя",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Обновить пользователя": {
+      "main": [
+        [
+          {
+            "node": "Вернуть событие",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Вернуть событие": {
+      "main": [
+        [
+          {
+            "node": "Маршрут сценария",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Маршрут сценария": {
+      "main": [
+        [
+          {
+            "node": "Эхо-ответ",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Меню",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Эхо-ответ": {
+      "main": [
+        [
+          {
+            "node": "POST в MAX API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Меню": {
+      "main": [
+        [
+          {
+            "node": "POST в MAX API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST в MAX API": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Записать ошибку отправки",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "active": false,
+  "pinData": {},
+  "tags": []
+}

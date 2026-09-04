@@ -1,61 +1,79 @@
 # max-n8n
 
-Проверка гипотезы: **можно ли собрать no-code платформу для бота MAX на n8n** —
-кнопки, меню, ветвление сценариев — без написания и деплоя отдельного бота.
+No-code платформа для бота MAX на n8n: меню, кнопки, ветвление сценариев — без
+отдельного бота, которого надо писать и деплоить.
 
-Короткий ответ: **да, с оговорками.** Подробности — в
-[`docs/verdict.md`](docs/verdict.md).
+Началось как проверка гипотезы («можно ли вообще?»), доведено до прод-сборки:
+Postgres, Redis, queue mode, вебхуки, идемпотентность, миграции.
+
+- Итоги проверки гипотезы — [`docs/verdict.md`](docs/verdict.md)
+- Развёртывание в проде — [`docs/production.md`](docs/production.md)
+- Особенности Bot API MAX — [`docs/max-bot-api.md`](docs/max-bot-api.md)
+- Сертификат Минцифры — [`certs/README.md`](certs/README.md)
 
 ## Что внутри
 
 | Путь | Что это |
 |---|---|
-| `docker/docker-compose.yml` | n8n 2.x в Docker, SQLite, том `max-n8n_n8n_data` |
-| `workflows/max-bot-menu.json` | Готовый сценарий: опрос Bot API MAX, меню на кнопках, ветвление |
-| `scripts/max-api.sh` | Ручные запросы к Bot API MAX (`me`, `chats`, `updates`, `reset`, `send`) |
-| `scripts/test-workflow.mjs` | Проверки логики сценария на фикстурах, без обращения к MAX |
-| `scripts/n8n-executions.sh` | Последние выполнения сценария из базы n8n (`make executions`) |
-| `docs/max-bot-api.md` | Что выяснено про Bot API MAX опытным путём |
-| `docs/verdict.md` | Итоги проверки гипотезы |
+| `docker/docker-compose.local.yml` | n8n + postgres, обычный режим, polling |
+| `docker/docker-compose.prod.yml` | n8n main + worker + postgres + redis, queue mode, вебхук |
+| `workflows/max-bot-core.json` | движок: журнал, пользователь, меню, отправка |
+| `workflows/max-bot-polling.json` | источник апдейтов: `GET /updates` |
+| `workflows/max-bot-webhook.json` | источник апдейтов: вебхук |
+| `db/migrations/` | схема базы бота |
+| `credentials/postgres-maxbot.json` | креды Postgres для n8n — без секретов, через `$env` |
+| `scripts/` | миграции, провижининг, запросы к MAX, просмотр выполнений, тесты |
 
-## Быстрый старт
+## Быстрый старт (локально)
 
 ```bash
-cp .env.example .env         # вписать MAX_BOT_TOKEN
-make check                   # убедиться, что токен рабочий
-make up                      # поднять n8n -> http://localhost:5678
-make import                  # залить сценарий
-make activate                # включить опрос MAX
+cp .env.example .env    # заполнить MAX_BOT_TOKEN, POSTGRES_PASSWORD, N8N_ENCRYPTION_KEY
+make check              # убедиться, что токен рабочий
+make up-local           # n8n + postgres -> http://localhost:5678
+make migrate            # создать базу бота и её схему
+make provision          # залить сценарии и включить источник по BOT_MODE
 ```
 
 Дальше — написать боту в личку в MAX. Через ≤10 секунд придёт меню с кнопками.
-Что происходило — `make executions`, подробности каждого шага — в UI n8n.
 
-`make help` покажет остальные цели.
+`make help` покажет остальные цели, `make executions` — что происходило,
+`make stats` — сводку по данным бота.
 
-## Как это работает
+Прод: `make up-prod && make migrate-prod && make provision-prod && make subscribe`.
+Подробности и оговорки — в [`docs/production.md`](docs/production.md).
+
+## Как это устроено
 
 ```
-Schedule (10 с)
-      |
-Прочитать marker        ← позиция в очереди обновлений, лежит в static data n8n
-      |
-GET /updates            ← HTTP Request, Authorization: {{ $env.MAX_BOT_TOKEN }}
-      |
-Разобрать updates       ← сохранить marker, отбросить групповые чаты и ботов,
-      |                   привести message_created / message_callback к одной форме
-Маршрут сценария        ← Switch: "эхо ..." -> одна ветка, всё остальное -> меню
-     / \
-  Эхо  Меню             ← Меню = единственное место с описанием кнопок
-     \ /
-POST в MAX API          ← /messages для сообщений, /answers для нажатий кнопок
+        BOT_MODE=polling                    BOT_MODE=webhook
+     max-bot-polling                       max-bot-webhook
+   Schedule (10 с)                        Webhook POST
+        │                                       │
+   аренда в bot_state ← защита от              проверка секрета
+        │                двойного опроса        │
+   GET /updates ──┬── сохранить marker          200 OK сразу
+        │         │   (даже если апдейтов нет)  │
+   разобрать      └───────────────┐             разобрать
+        │                          │            │
+        └──────────► max-bot-core ◄─────────────┘
+                          │
+        записать событие (dedup_key, ON CONFLICT DO NOTHING)
+                          │
+                    новое событие? ──нет──► стоп, дубль
+                          │да
+                  обновить пользователя
+                          │
+                  Switch: эхо / меню
+                          │
+                  POST /messages или /answers
+                          │ошибка
+                  bot_send_failures
 ```
 
 ### Где менять кнопки
 
-Всё меню — один объект `MENU` в ноде **«Меню»**. Открыть ноду в UI n8n,
-поправить JSON, нажать Save. Перезапуск контейнера не нужен, изменения
-подхватываются со следующего опроса.
+Всё меню — один объект `MENU` в ноде **«Меню»** сценария `max-bot-core`.
+Открыть ноду в UI n8n, поправить, нажать Save. Рестарт не нужен.
 
 ```js
 main: {
@@ -67,25 +85,18 @@ main: {
 },
 ```
 
-Добавить новый экран = добавить ключ в `MENU` и кнопку с
-`payload: '<ключ>'`. Роутинг подхватит его сам.
+Новый экран = новый ключ в `MENU` плюс кнопка с `payload: '<ключ>'`.
+Роутинг подхватит сам.
 
 ## Безопасность
 
-- `MAX_BOT_TOKEN` лежит только в `.env`, который в `.gitignore`.
-  В n8n он попадает как переменная окружения и читается выражением
-  `{{ $env.MAX_BOT_TOKEN }}` — в базе n8n и в экспорте сценария токена нет.
-- Сценарий **обрабатывает только личные диалоги**. Групповые чаты и сообщения
-  от других ботов отбрасываются в ноде «Разобрать updates» (флаг `ONLY_DIALOGS`).
-  Это важно: боевой бот состоит в реальных групповых чатах.
-- `make clean` удаляет том n8n. Имя compose-проекта зафиксировано (`name: max-n8n`),
-  чтобы не задеть другие стеки на той же машине.
-
-## Ограничения текущей сборки
-
-- **Long polling, а не вебхук.** Работает без публичного адреса, задержка ≤10 с.
-  Переход на вебхук — см. [`docs/verdict.md`](docs/verdict.md).
-- **SQLite.** Для PoC достаточно; под нагрузкой нужен Postgres.
-- **Одна реплика.** Marker хранится в static data одного инстанса n8n.
-- Нет аутентификации перед n8n — порт слушает `0.0.0.0`. Для доступа не с
-  localhost поставьте reverse-proxy с авторизацией.
+- Секреты только в `.env` (в `.gitignore`). В базу n8n не попадают: сценарии
+  читают их выражением `{{ $env.MAX_BOT_TOKEN }}`, а файл credentials хранит
+  ссылки `={{ $env.POSTGRES_PASSWORD }}`, а не значения.
+- Вебхук проверяет заголовок `X-Max-Bot-Api-Secret`; без совпадения — 401.
+- Бот **обрабатывает только личные диалоги**: групповые чаты и сообщения других
+  ботов отсекаются (`ONLY_DIALOGS=true`). Это важно — боевой токен состоит в
+  реальных групповых чатах.
+- Postgres и Redis в сети `internal: true`, наружу не смотрят.
+- Имена compose-проектов зафиксированы (`max-n8n-local`, `max-n8n`), чтобы
+  `down -v` не задел чужие стеки на той же машине.
