@@ -1,0 +1,6 @@
+# Секреты: токен бота MAX
+.env
+.env.local
+
+# Выгрузки из n8n (могут содержать креды из базы n8n)
+workflows/export.json

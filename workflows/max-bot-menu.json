@@ -1,0 +1,310 @@
+{
+  "id": "maxbotmenu0000001",
+  "versionId": "00000000-0000-4000-8000-000000000001",
+  "name": "MAX bot — меню на кнопках (long polling)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "seconds",
+              "secondsInterval": 10
+            }
+          ]
+        }
+      },
+      "id": "каждые-10-секунд",
+      "name": "Каждые 10 секунд",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Читает marker последней обработанной пачки обновлений.\n// n8n хранит его в статических данных workflow между запусками.\nconst store = $getWorkflowStaticData('global');\nreturn [{ json: { marker: store.marker ?? null } }];"
+      },
+      "id": "прочитать-marker",
+      "name": "Прочитать marker",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.MAX_API_URL }}/updates",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "marker",
+              "value": "={{ $json.marker ?? '' }}"
+            },
+            {
+              "name": "limit",
+              "value": "100"
+            },
+            {
+              "name": "timeout",
+              "value": "0"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $env.MAX_BOT_TOKEN }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "get--updates",
+      "name": "GET /updates",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -20,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Разбирает ответ GET /updates:\n//  1. сохраняет новый marker (подтверждение обработки на стороне MAX);\n//  2. отбрасывает всё, кроме личных диалогов, — боевые групповые чаты не трогаем;\n//  3. приводит message_created и message_callback к одной плоской структуре.\nconst store = $getWorkflowStaticData('global');\nconst res = $input.first().json ?? {};\nconst updates = res.updates ?? [];\n\nif (res.marker !== undefined && res.marker !== null) {\n  store.marker = res.marker;\n}\n\nconst ONLY_DIALOGS = true; // защита: false выпустит бота в групповые чаты\n\nconst out = [];\nfor (const u of updates) {\n  const msg = u.message ?? {};\n  const rec = msg.recipient ?? {};\n  const cb = u.callback ?? {};\n  const sender = cb.user ?? msg.sender ?? {};\n\n  if (ONLY_DIALOGS && rec.chat_type !== 'dialog') continue;\n  if (sender.is_bot) continue;\n\n  const base = {\n    chat_id: rec.chat_id ?? null,\n    user_id: rec.user_id ?? sender.user_id ?? null,\n    name: sender.first_name ?? sender.name ?? 'друг',\n    update_type: u.update_type,\n  };\n\n  if (u.update_type === 'message_created') {\n    out.push({ json: { ...base, kind: 'message', text: (msg.body?.text ?? '').trim(), payload: null, callback_id: null } });\n  } else if (u.update_type === 'message_callback') {\n    out.push({ json: { ...base, kind: 'callback', text: '', payload: cb.payload ?? '', callback_id: cb.callback_id ?? null } });\n  } else if (u.update_type === 'bot_started') {\n    out.push({ json: { ...base, kind: 'message', text: '/start', payload: null, callback_id: null } });\n  }\n}\nreturn out;"
+      },
+      "id": "разобрать-updates",
+      "name": "Разобрать updates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "operator": {
+                      "type": "string",
+                      "operation": "startsWith"
+                    },
+                    "leftValue": "={{ $json.text }}",
+                    "rightValue": "эхо "
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "эхо"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    },
+                    "leftValue": "={{ true }}",
+                    "rightValue": ""
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "меню"
+            }
+          ]
+        },
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "маршрут-сценария",
+      "name": "Маршрут сценария",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Ветка «эхо»: отдельный сценарий, не связанный с меню.\nconst ev = $json;\nreturn [{\n  json: {\n    api_path: 'messages',\n    api_query: { chat_id: String(ev.chat_id) },\n    body: {\n      text: '🔁 Вы написали: ' + ev.text.replace(/^эхо\\s+/i, ''),\n      format: 'markdown',\n      attachments: [{ type: 'inline_keyboard', payload: { buttons: [[{ type: 'callback', text: '⬅️ В меню', payload: 'main' }]] } }],\n    },\n  },\n}];"
+      },
+      "id": "эхо-ответ",
+      "name": "Эхо-ответ",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ЕДИНСТВЕННОЕ место, где описано меню бота.\n// Чтобы поменять кнопки — правьте объект MENU прямо в редакторе n8n\n// и нажмите Save. Перезапуск контейнера не нужен.\n//\n// Типы кнопок MAX: callback | link | request_contact | request_geo_location | message | chat\nconst MENU = {\n  main: {\n    text: 'Привет, {name}! 👋\\nЭто демо-бот, собранный целиком в n8n.\\n\\nВыберите раздел:',\n    buttons: [\n      [\n        { type: 'callback', text: '📋 Каталог', payload: 'catalog' },\n        { type: 'callback', text: 'ℹ️ О боте', payload: 'about' },\n      ],\n      [{ type: 'callback', text: '📞 Контакты', payload: 'contacts' }],\n      [{ type: 'link', text: '🌐 Документация MAX', url: 'https://dev.max.ru/docs' }],\n    ],\n  },\n  catalog: {\n    text: '📋 *Каталог*\\n\\nВыберите товар:',\n    buttons: [\n      [\n        { type: 'callback', text: 'Товар A — 100 ₽', payload: 'item:a' },\n        { type: 'callback', text: 'Товар B — 250 ₽', payload: 'item:b' },\n      ],\n      [{ type: 'callback', text: '⬅️ Назад', payload: 'main' }],\n    ],\n  },\n  about: {\n    text: 'ℹ️ *О боте*\\n\\nСценарий целиком живёт в n8n: опрос Bot API MAX, разбор апдейтов, меню и отправка ответов. Кода в репозитории нет — только конфигурация.',\n    buttons: [[{ type: 'callback', text: '⬅️ Назад', payload: 'main' }]],\n  },\n  contacts: {\n    text: '📞 *Контакты*\\n\\nОставьте телефон, и мы перезвоним.',\n    buttons: [\n      [{ type: 'request_contact', text: '📱 Отправить контакт' }],\n      [{ type: 'callback', text: '⬅️ Назад', payload: 'main' }],\n    ],\n  },\n};\n\n// Динамический экран: показывает, что содержимое можно строить на лету.\nfunction screen(key, ev) {\n  if (key.startsWith('item:')) {\n    const code = key.slice(5).toUpperCase();\n    return {\n      text: `✅ Товар *${code}* добавлен в корзину.\\nВремя: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`,\n      buttons: [[{ type: 'callback', text: '⬅️ В каталог', payload: 'catalog' }]],\n    };\n  }\n  return MENU[key] ?? MENU.main;\n}\n\nconst ev = $json;\nconst key = ev.kind === 'callback' ? (ev.payload || 'main') : 'main';\nconst scr = screen(key, ev);\n\nconst body = {\n  text: scr.text.replace('{name}', ev.name),\n  format: 'markdown',\n  attachments: [{ type: 'inline_keyboard', payload: { buttons: scr.buttons } }],\n};\n\n// callback отвечаем через /answers — сообщение с кнопками меняется на месте.\n// Обычное сообщение отправляем через /messages.\nif (ev.kind === 'callback' && ev.callback_id) {\n  return [{ json: { api_path: 'answers', api_query: { callback_id: ev.callback_id }, body: { message: body } } }];\n}\nreturn [{ json: { api_path: 'messages', api_query: { chat_id: String(ev.chat_id) }, body } }];"
+      },
+      "id": "меню",
+      "name": "Меню",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MAX_API_URL }}/{{ $json.api_path }}",
+        "sendQuery": true,
+        "specifyQuery": "json",
+        "jsonQuery": "={{ JSON.stringify($json.api_query) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $env.MAX_BOT_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "post-в-max-api",
+      "name": "POST в MAX API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        900,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Каждые 10 секунд": {
+      "main": [
+        [
+          {
+            "node": "Прочитать marker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Прочитать marker": {
+      "main": [
+        [
+          {
+            "node": "GET /updates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET /updates": {
+      "main": [
+        [
+          {
+            "node": "Разобрать updates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Разобрать updates": {
+      "main": [
+        [
+          {
+            "node": "Маршрут сценария",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Маршрут сценария": {
+      "main": [
+        [
+          {
+            "node": "Эхо-ответ",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Меню",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Эхо-ответ": {
+      "main": [
+        [
+          {
+            "node": "POST в MAX API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Меню": {
+      "main": [
+        [
+          {
+            "node": "POST в MAX API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "active": false,
+  "pinData": {},
+  "tags": []
+}
