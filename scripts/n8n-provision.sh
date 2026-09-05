@@ -7,9 +7,10 @@
 # Второй источник принудительно выключается: они делят одну очередь обновлений
 # MAX и, работая вместе, будут отбирать апдейты друг у друга.
 #
-# Движок (max-bot-core) включается всегда: в n8n 2.x сценарий с Execute
-# Workflow Trigger обязан быть активным, иначе вызов падает с
-# "Workflow is not active and cannot be executed".
+# Движок (max-bot-core) и отправка (max-bot-send) включаются всегда: в n8n 2.x
+# сценарий с Execute Workflow Trigger обязан быть активным, иначе вызов падает с
+# "Workflow is not active and cannot be executed". Админка контента (формы)
+# тоже всегда активна — она за Basic Auth.
 #
 # Использование: scripts/n8n-provision.sh [local|prod]
 set -euo pipefail
@@ -25,6 +26,8 @@ DC=(docker compose --env-file .env -f "$COMPOSE_FILE")
 N8N=("${DC[@]}" exec -T n8n n8n)
 
 CORE_ID=maxbotcore000001
+SEND_ID=maxbotsend000001
+ADMIN_ID=maxbotadmn000001
 POLL_ID=maxbotpoll000001
 HOOK_ID=maxbothook000001
 
@@ -40,11 +43,16 @@ case "$BOT_MODE" in
     ;;
   *) echo "BOT_MODE должен быть polling или webhook, а не '$BOT_MODE'" >&2; exit 1 ;;
 esac
+# Формы админки контента торчат наружу как /form/..., поэтому без пароля не поднимаем.
+[ -n "${ADMIN_FORM_USER:-}" ] && [ -n "${ADMIN_FORM_PASSWORD:-}" ] || {
+  echo "Нужны ADMIN_FORM_USER и ADMIN_FORM_PASSWORD в .env — логин к формам админки контента" >&2; exit 1; }
 
 echo "== Учётные данные (секретов в файле нет — только ссылки на \$env)"
-"${DC[@]}" cp credentials/postgres-maxbot.json n8n:/tmp/cred.json >/dev/null
-"${N8N[@]}" import:credentials --input=/tmp/cred.json 2>&1 | tail -1
-"${DC[@]}" exec -T n8n rm -f /tmp/cred.json
+for f in credentials/*.json; do
+  "${DC[@]}" cp "$f" n8n:/tmp/cred.json >/dev/null
+  "${N8N[@]}" import:credentials --input=/tmp/cred.json 2>&1 | tail -1
+  "${DC[@]}" exec -T n8n rm -f /tmp/cred.json
+done
 
 echo "== Сценарии"
 for f in workflows/*.json; do
@@ -53,9 +61,12 @@ done
 
 echo "== Активация (BOT_MODE=$BOT_MODE)"
 "${N8N[@]}" update:workflow --id=$CORE_ID       --active=true  >/dev/null
+"${N8N[@]}" update:workflow --id=$SEND_ID       --active=true  >/dev/null
+"${N8N[@]}" update:workflow --id=$ADMIN_ID      --active=true  >/dev/null
 "${N8N[@]}" update:workflow --id=$ACTIVE_SRC    --active=true  >/dev/null
 "${N8N[@]}" update:workflow --id=$INACTIVE_SRC  --active=false >/dev/null
-echo "   движок: $CORE_ID, источник: $ACTIVE_SRC, выключен: $INACTIVE_SRC"
+echo "   движок: $CORE_ID, отправка: $SEND_ID, админка: $ADMIN_ID"
+echo "   источник: $ACTIVE_SRC, выключен: $INACTIVE_SRC"
 
 # Именно up -d, а не restart: restart переиспользует окружение уже созданного
 # контейнера, и правки в .env (ADMIN_IDS, токен, MAX_API_BASE_URL) не доезжают.

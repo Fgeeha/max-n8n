@@ -1,0 +1,280 @@
+{
+  "id": "maxbotadmn000001",
+  "name": "MAX bot — админка контента",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Админка контента — без кода\n\nДве формы n8n за Basic Auth (логин/пароль — `ADMIN_FORM_USER` / `ADMIN_FORM_PASSWORD` в .env):\n\n- **/form/maxbot-screens** — экран: ключ, текст, кнопки JSON\n- **/form/maxbot-products** — товар каталога\n\nЗапись идёт прямо в `bot_screens` / `bot_products`, бот подхватывает при следующем сообщении. Существующий ключ — перезаписывается.\n\nПлейсхолдеры в тексте и кнопках: `{name}` `{user_id}` `{chat_id}` `{title}` `{short}` `{description}` `{price}` `{id}` `{qty}` `{total}` `{phone}` `{order_id}` `{client}` `{lat}` `{lon}` `{echo}` `{rates_date}` `{rates_lines}` `{orders}`.\n\nНовый экран показывается по кнопке с `payload`, равным его ключу.",
+        "width": 720,
+        "height": 360,
+        "color": 5
+      },
+      "id": "note--260--340",
+      "name": "Sticky Note -260--340",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -260,
+        -340
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "basicAuth",
+        "formTitle": "Экран бота",
+        "formDescription": "Ключ экрана — это payload кнопки, которая его открывает. Кнопки — JSON: [[{\"type\":\"callback\",\"text\":\"⬅️ Назад\",\"payload\":\"main\"}]]",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Ключ",
+              "fieldType": "text",
+              "requiredField": true,
+              "placeholder": "например delivery"
+            },
+            {
+              "fieldLabel": "Текст",
+              "fieldType": "textarea",
+              "requiredField": true,
+              "placeholder": "Markdown MAX: *жирный*, _курсив_. Плейсхолдеры: {name}, {title}…"
+            },
+            {
+              "fieldLabel": "Кнопки",
+              "fieldType": "textarea",
+              "requiredField": false,
+              "placeholder": "[[{\"type\":\"callback\",\"text\":\"⬅️ В меню\",\"payload\":\"main\"}]]"
+            }
+          ]
+        },
+        "options": {
+          "buttonLabel": "Сохранить",
+          "appendAttribution": false
+        }
+      },
+      "id": "Форма: экран",
+      "name": "Форма: экран",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.2,
+      "position": [
+        -260,
+        80
+      ],
+      "webhookId": "maxbot-screens",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "maxbotform000001",
+          "name": "maxbot-form-admin"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO bot_screens (key, text, buttons, updated_at)\nVALUES ($1, $2, COALESCE(NULLIF($3, ''), '[]')::jsonb, now())\nON CONFLICT (key) DO UPDATE\n   SET text = EXCLUDED.text, buttons = EXCLUDED.buttons, updated_at = now()\nRETURNING key;",
+        "options": {
+          "queryReplacement": "={{ [$json['Ключ'].trim(), $json['Текст'], ($json['Кнопки'] ?? '').trim()] }}"
+        }
+      },
+      "id": "Сохранить экран",
+      "name": "Сохранить экран",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        20,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "maxbotpg000000001",
+          "name": "maxbot-postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Сохранено",
+        "completionMessage": "={{ 'Экран «' + $json.key + '» записан. Бот покажет его при следующем сообщении.' }}",
+        "options": {}
+      },
+      "id": "Экран сохранён",
+      "name": "Экран сохранён",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 1,
+      "position": [
+        300,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "basicAuth",
+        "formTitle": "Товар каталога",
+        "formDescription": "Товар появляется в каталоге кнопкой «{title} — {price}». id — короткий латинский ключ, он попадает в payload кнопок.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "id",
+              "fieldType": "text",
+              "requiredField": true,
+              "placeholder": "например d"
+            },
+            {
+              "fieldLabel": "Название",
+              "fieldType": "text",
+              "requiredField": true,
+              "placeholder": "Кружка «Пар»"
+            },
+            {
+              "fieldLabel": "Цена, ₽",
+              "fieldType": "number",
+              "requiredField": true,
+              "placeholder": "590"
+            },
+            {
+              "fieldLabel": "Коротко",
+              "fieldType": "text",
+              "requiredField": false,
+              "placeholder": "керамика, 350 мл"
+            },
+            {
+              "fieldLabel": "Описание",
+              "fieldType": "textarea",
+              "requiredField": false,
+              "placeholder": "Полное описание для карточки"
+            },
+            {
+              "fieldLabel": "Порядок",
+              "fieldType": "number",
+              "requiredField": false,
+              "placeholder": "100"
+            },
+            {
+              "fieldLabel": "В каталоге",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "да"
+                  },
+                  {
+                    "option": "нет"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "options": {
+          "buttonLabel": "Сохранить",
+          "appendAttribution": false
+        }
+      },
+      "id": "Форма: товар",
+      "name": "Форма: товар",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.2,
+      "position": [
+        -260,
+        340
+      ],
+      "webhookId": "maxbot-products",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "maxbotform000001",
+          "name": "maxbot-form-admin"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO bot_products (id, title, price_rub, short, description, sort, active, updated_at)\nVALUES ($1, $2, $3::int, $4, $5, COALESCE(NULLIF($6, '')::int, 100), $7 = 'да', now())\nON CONFLICT (id) DO UPDATE\n   SET title = EXCLUDED.title, price_rub = EXCLUDED.price_rub, short = EXCLUDED.short,\n       description = EXCLUDED.description, sort = EXCLUDED.sort, active = EXCLUDED.active,\n       updated_at = now()\nRETURNING id, title;",
+        "options": {
+          "queryReplacement": "={{ [$json['id'].trim(), $json['Название'], $json['Цена, ₽'], $json['Коротко'] ?? '', $json['Описание'] ?? '', String($json['Порядок'] ?? ''), $json['В каталоге']] }}"
+        }
+      },
+      "id": "Сохранить товар",
+      "name": "Сохранить товар",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        20,
+        340
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "maxbotpg000000001",
+          "name": "maxbot-postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Сохранено",
+        "completionMessage": "={{ 'Товар «' + $json.title + '» (' + $json.id + ') записан. Кнопка в каталоге появится при следующем показе.' }}",
+        "options": {}
+      },
+      "id": "Товар сохранён",
+      "name": "Товар сохранён",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 1,
+      "position": [
+        300,
+        340
+      ]
+    }
+  ],
+  "connections": {
+    "Форма: экран": {
+      "main": [
+        [
+          {
+            "node": "Сохранить экран",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Сохранить экран": {
+      "main": [
+        [
+          {
+            "node": "Экран сохранён",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Форма: товар": {
+      "main": [
+        [
+          {
+            "node": "Сохранить товар",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Сохранить товар": {
+      "main": [
+        [
+          {
+            "node": "Товар сохранён",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

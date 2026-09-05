@@ -3,6 +3,10 @@
 # Применённые версии отмечаются в schema_migrations, повторно не выполняются.
 # Каждый файл идёт в одной транзакции: упал — не зачтён.
 #
+# После миграций досеивает контент бота (экраны, товары) из
+# db/seed/bot_content.json. Только недостающие строки: правки, сделанные через
+# админку в n8n, не перетираются.
+#
 # Использование: scripts/db-migrate.sh [local|prod]
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -46,5 +50,20 @@ for f in db/migrations/*.sql; do
     echo "COMMIT;"; } | psql_app -q -f -
   applied=$((applied + 1))
 done
+
+echo "Контент бота: досеиваю недостающие экраны и товары"
+psql_app -q -v content="$(cat db/seed/bot_content.json)" <<'SQL'
+INSERT INTO bot_screens (key, text, buttons)
+SELECT key, text, buttons
+  FROM jsonb_to_recordset((:'content')::jsonb -> 'screens')
+       AS t(key text, text text, buttons jsonb)
+ON CONFLICT (key) DO NOTHING;
+
+INSERT INTO bot_products (id, title, price_rub, short, description, sort)
+SELECT id, title, price_rub, COALESCE(short, ''), COALESCE(description, ''), COALESCE(sort, 100)
+  FROM jsonb_to_recordset((:'content')::jsonb -> 'products')
+       AS t(id text, title text, price_rub integer, short text, description text, sort integer)
+ON CONFLICT (id) DO NOTHING;
+SQL
 
 echo "Готово. Применено новых миграций: $applied"

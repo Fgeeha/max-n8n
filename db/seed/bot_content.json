@@ -1,0 +1,108 @@
+{
+  "screens": [
+    { "key": "main",
+      "text": "Привет, {name}! 👋\nЯ демо-бот «Тест Компания», собранный целиком в n8n.\n\nВыберите раздел:",
+      "buttons": [
+        [ { "type": "callback", "text": "🏢 О компании", "payload": "about" },
+          { "type": "callback", "text": "📋 Каталог", "payload": "catalog" } ],
+        [ { "type": "callback", "text": "💱 Курс валют", "payload": "rates" },
+          { "type": "callback", "text": "🧾 Мои заказы", "payload": "myorders" } ],
+        [ { "type": "request_geo_location", "text": "📍 Я рядом?" } ],
+        [ { "type": "link", "text": "🌐 Документация MAX", "url": "https://dev.max.ru/docs" } ]
+      ] },
+    { "key": "about",
+      "text": "🏢 *Тест Компания*\n\nЭто тестовая компания: витрина возможностей связки n8n + MAX. Товаров на складе нет, заказы никуда не уезжают, кроме нашей базы.\n\n📍 г. Волгоград, ул. Тестовая, 1\n📞 +7 (8442) 00-00-00",
+      "buttons": [
+        [ { "type": "link", "text": "🌐 Наш сайт", "url": "https://dev.max.ru/docs" } ],
+        [ { "type": "clipboard", "text": "📋 Скопировать телефон", "payload": "+78442000000" } ],
+        [ { "type": "callback", "text": "⬅️ Назад", "payload": "main" } ]
+      ] },
+    { "key": "catalog",
+      "text": "📋 *Каталог*\n\nВыберите товар, чтобы прочитать подробности:",
+      "buttons": [ [ { "type": "callback", "text": "⬅️ В меню", "payload": "main" } ] ] },
+    { "key": "catalog_button",
+      "text": "{title} — {price}",
+      "buttons": [] },
+    { "key": "item",
+      "text": "*{title}*\n_{short}_\n\n{description}\n\nЦена: *{price}*",
+      "buttons": [
+        [ { "type": "callback", "text": "🛒 Заказать", "payload": "order:{id}" } ],
+        [ { "type": "callback", "text": "⬅️ В каталог", "payload": "catalog" } ]
+      ] },
+    { "key": "order_qty",
+      "text": "🛒 Заказ: *{title}*\nЦена: {price}\n\nШаг 1 из 2. Сколько штук? Нажмите кнопку или напишите число сообщением.",
+      "buttons": [
+        [ { "type": "callback", "text": "1", "payload": "qty:1" },
+          { "type": "callback", "text": "2", "payload": "qty:2" },
+          { "type": "callback", "text": "5", "payload": "qty:5" } ],
+        [ { "type": "callback", "text": "✖️ Отменить", "payload": "cancel" } ]
+      ] },
+    { "key": "order_qty_bad",
+      "text": "🤔 Нужно целое число от 1 до 99.\n\n🛒 Заказ: *{title}*\nЦена: {price}\n\nШаг 1 из 2. Сколько штук? Нажмите кнопку или напишите число сообщением.",
+      "buttons": [
+        [ { "type": "callback", "text": "1", "payload": "qty:1" },
+          { "type": "callback", "text": "2", "payload": "qty:2" },
+          { "type": "callback", "text": "5", "payload": "qty:5" } ],
+        [ { "type": "callback", "text": "✖️ Отменить", "payload": "cancel" } ]
+      ] },
+    { "key": "order_phone",
+      "text": "🛒 *{title}* × {qty}\nИтого: *{total}*\n\nШаг 2 из 2. Как с вами связаться? Отправьте контакт кнопкой или напишите телефон сообщением.",
+      "buttons": [
+        [ { "type": "request_contact", "text": "📱 Отправить мой контакт" } ],
+        [ { "type": "callback", "text": "✖️ Отменить", "payload": "cancel" } ]
+      ] },
+    { "key": "order_phone_bad",
+      "text": "🤔 Не разобрал номер. Отправьте контакт кнопкой или напишите телефон цифрами.",
+      "buttons": [
+        [ { "type": "request_contact", "text": "📱 Отправить мой контакт" } ],
+        [ { "type": "callback", "text": "✖️ Отменить", "payload": "cancel" } ]
+      ] },
+    { "key": "order_done",
+      "text": "✅ Заказ *№{order_id}* принят!\n\n{title} × {qty}\nИтого: *{total}*\nТелефон: {phone}\n\nМенеджер свяжется с вами.",
+      "buttons": [
+        [ { "type": "callback", "text": "🧾 Мои заказы", "payload": "myorders" } ],
+        [ { "type": "callback", "text": "⬅️ В меню", "payload": "main" } ]
+      ] },
+    { "key": "order_admin",
+      "text": "🔔 *Новый заказ №{order_id}*\n\n{title} × {qty}\nСумма: {total}\nТелефон: {phone}\nКлиент: {client}",
+      "buttons": [] },
+    { "key": "cancel",
+      "text": "✖️ Заказ отменён.",
+      "buttons": [ [ { "type": "callback", "text": "⬅️ В меню", "payload": "main" } ] ] },
+    { "key": "rates",
+      "text": "💱 *Курс ЦБ РФ* на {rates_date}\n\n{rates_lines}",
+      "buttons": [
+        [ { "type": "callback", "text": "🔄 Обновить", "payload": "rates" } ],
+        [ { "type": "callback", "text": "⬅️ В меню", "payload": "main" } ]
+      ] },
+    { "key": "myorders",
+      "text": "🧾 *Ваши заказы*\n\n{orders}",
+      "buttons": [
+        [ { "type": "callback", "text": "📋 В каталог", "payload": "catalog" } ],
+        [ { "type": "callback", "text": "⬅️ В меню", "payload": "main" } ]
+      ] },
+    { "key": "myorders_empty",
+      "text": "🧾 Заказов пока нет.\n\nЗагляните в каталог — оформление занимает два шага.",
+      "buttons": [
+        [ { "type": "callback", "text": "📋 В каталог", "payload": "catalog" } ],
+        [ { "type": "callback", "text": "⬅️ В меню", "payload": "main" } ]
+      ] },
+    { "key": "whoami",
+      "text": "🪪 Ваш user_id: `{user_id}`\nchat_id диалога: `{chat_id}`\n\nВпишите user_id в ADMIN_IDS в .env, чтобы получать уведомления о заказах.",
+      "buttons": [ [ { "type": "callback", "text": "⬅️ В меню", "payload": "main" } ] ] },
+    { "key": "geo",
+      "text": "📍 Спасибо! Ваши координаты: {lat}, {lon}.\n\nМы находимся по адресу г. Волгоград, ул. Тестовая, 1.",
+      "buttons": [ [ { "type": "callback", "text": "⬅️ В меню", "payload": "main" } ] ] },
+    { "key": "echo",
+      "text": "🔁 Вы написали: {echo}",
+      "buttons": [ [ { "type": "callback", "text": "⬅️ В меню", "payload": "main" } ] ] }
+  ],
+  "products": [
+    { "id": "a", "title": "Кофемашина «Утро»", "price_rub": 24900, "short": "зерновая, 15 бар", "sort": 10,
+      "description": "Зерновая кофемашина с автоматическим капучинатором.\n\n• давление 15 бар\n• бункер 250 г зерна\n• резервуар 1.8 л\n• автоочистка от накипи\n\nГарантия 2 года." },
+    { "id": "b", "title": "Чайник «Пар»", "price_rub": 3400, "short": "1.7 л, нержавейка", "sort": 20,
+      "description": "Электрочайник из нержавеющей стали.\n\n• объём 1.7 л\n• мощность 2200 Вт\n• закипает за 4 минуты\n• защита от включения без воды\n\nГарантия 1 год." },
+    { "id": "c", "title": "Термос «Дорога»", "price_rub": 1890, "short": "0.75 л, держит 12 ч", "sort": 30,
+      "description": "Вакуумный термос для поездок.\n\n• объём 0.75 л\n• держит температуру 12 часов\n• крышка-кружка\n• не течёт в сумке\n\nГарантия 1 год." }
+  ]
+}

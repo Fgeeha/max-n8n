@@ -18,20 +18,24 @@ Postgres, Redis, queue mode, вебхуки, идемпотентность, м�
 |---|---|
 | `docker/docker-compose.local.yml` | n8n + postgres, обычный режим, polling |
 | `docker/docker-compose.prod.yml` | n8n main + worker + postgres + redis, queue mode, вебхук |
-| `workflows/max-bot-core.json` | движок: журнал, пользователь, меню, каталог, заказы, отправка |
+| `workflows/max-bot-core.json` | движок: журнал, пользователь, логика экранов, каталог, заказы |
+| `workflows/max-bot-send.json` | переиспользуемый элемент «Отправить в MAX»: `/messages` или `/answers`, журнал ошибок — без кода |
+| `workflows/max-bot-admin.json` | админка контента: две формы n8n за Basic Auth пишут экраны и товары в базу — без кода |
 | `workflows/max-bot-polling.json` | источник апдейтов: `GET /updates` |
 | `workflows/max-bot-webhook.json` | источник апдейтов: вебхук |
 | `db/migrations/` | схема базы бота |
-| `credentials/postgres-maxbot.json` | креды Postgres для n8n — без секретов, через `$env` |
+| `db/seed/bot_content.json` | стартовый контент: тексты экранов, кнопки, товары |
+| `credentials/*.json` | креды Postgres и Basic Auth форм для n8n — без секретов, через `$env` |
 | `scripts/` | миграции, провижининг, запросы к MAX, просмотр выполнений, тесты |
 
 ## Быстрый старт (локально)
 
 ```bash
-cp .env.example .env    # заполнить MAX_BOT_TOKEN, POSTGRES_PASSWORD, N8N_ENCRYPTION_KEY
+cp .env.example .env    # заполнить MAX_BOT_TOKEN, POSTGRES_PASSWORD, N8N_ENCRYPTION_KEY,
+                        # ADMIN_FORM_PASSWORD (логин к формам админки контента)
 make check              # убедиться, что токен рабочий
 make up-local           # n8n + postgres -> http://localhost:5678
-make migrate            # создать базу бота и её схему
+make migrate            # создать базу бота, схему и стартовый контент экранов
 make provision          # залить сценарии и включить источник по BOT_MODE
 ```
 
@@ -64,11 +68,21 @@ make provision          # залить сценарии и включить ис
                           │да
                   обновить пользователя
                           │
-                  Switch: эхо / меню
+        состояние диалога + экраны и товары из БД (одним SELECT)
                           │
-                  POST /messages или /answers
-                          │ошибка
-                  bot_send_failures
+        «Сценарий»: какой экран показать, что запомнить
+                          │
+        Switch: экран / заказ / курс ЦБ / мои заказы
+                          │
+              ┌───────────┴───────────┐
+              │  max-bot-send          │  ← переиспользуемый элемент
+              │  callback_id? ─да─► POST /answers
+              │       └──────нет─► POST /messages
+              │            │ошибка → bot_send_failures
+              └────────────────────────┘
+
+  max-bot-admin: формы /form/maxbot-screens и /form/maxbot-products
+                 (Basic Auth) ─► bot_screens / bot_products
 ```
 
 ### Что умеет демо-бот
@@ -89,24 +103,30 @@ make provision          # залить сценарии и включить ис
 Готовый заказ ложится в `orders` и уходит сообщением каждому из `ADMIN_IDS`.
 Свой `user_id` для `ADMIN_IDS` подскажет команда `/whoami`.
 
-### Где менять кнопки
+### Где менять тексты, кнопки и товары
 
-Всё поведение — одна нода **«Сценарий»** в `max-bot-core`. Открыть в UI n8n,
-поправить, нажать Save. Рестарт не нужен.
+Контент лежит в базе, а не в коде: таблицы `bot_screens` (ключ, текст,
+кнопки) и `bot_products`. Правится формами n8n без открытия редактора:
 
-```js
-// новый экран
-if (key === 'delivery') return out({
-  text: '🚚 *Доставка*\n\nПо городу — бесплатно от 3000 ₽.',
-  buttons: [[{ type: 'callback', text: '⬅️ Назад', payload: 'main' }]],
-});
+| Форма | Что делает |
+|---|---|
+| `http://localhost:5678/form/maxbot-screens` | создать или переписать экран: ключ, текст, кнопки JSON |
+| `http://localhost:5678/form/maxbot-products` | добавить или изменить товар каталога |
 
-// новый товар — кнопка в каталоге появится сама
-d: { title: 'Кружка «Пар»', price: 590, short: 'керамика, 350 мл', desc: '…' },
-```
+Логин и пароль — `ADMIN_FORM_USER` / `ADMIN_FORM_PASSWORD` из `.env`. Бот
+подхватывает правку на следующем сообщении, рестарт и Save в n8n не нужны.
 
-Подробнее, включая список идей для новых примеров, — в
-[`docs/scenarios.md`](docs/scenarios.md).
+Новый экран показывается по кнопке, чей `payload` равен его ключу: добавили
+экран `delivery` и кнопку `{"type":"callback","text":"🚚 Доставка","payload":"delivery"}`
+в главное меню — готово. Новый товар сам появляется кнопкой в каталоге.
+В текстах работают плейсхолдеры `{name}`, `{title}`, `{price}` и другие,
+полный список — в заметке на холсте сценария «Админка контента».
+
+Стартовый набор экранов — `db/seed/bot_content.json`, `make migrate`
+досеивает недостающие ключи и не трогает отредактированные.
+
+Логика переходов (форма заказа, каталог, команды) — одна нода **«Сценарий»**
+в `max-bot-core`. Подробнее — в [`docs/scenarios.md`](docs/scenarios.md).
 
 ## Безопасность
 

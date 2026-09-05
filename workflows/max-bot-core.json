@@ -1,7 +1,7 @@
 {
   "id": "maxbotcore000001",
   "versionId": "00000000-0000-4000-8000-otcore000001",
-  "name": "MAX bot — движок (меню, каталог, заказы)",
+  "name": "MAX bot — движок (контент из базы)",
   "nodes": [
     {
       "parameters": {
@@ -95,55 +95,6 @@
           "name": "maxbot-postgres"
         }
       }
-    },
-    {
-      "parameters": {
-        "jsCode": "// Ноды Postgres отдают результат запроса, а не событие.\n// Возвращаем исходное событие, чтобы сценарий работал с ним.\nreturn [{ json: $('Событие от источника').first().json }];"
-      },
-      "id": "Вернуть событие",
-      "name": "Вернуть событие",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        -320,
-        220
-      ]
-    },
-    {
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "SELECT COALESCE(s.screen, 'main')      AS screen,\n       s.step                          AS step,\n       COALESCE(s.data, '{}'::jsonb)   AS data\n  FROM (SELECT 1) AS one\n  LEFT JOIN dialog_state s ON s.user_id = $1\n                          AND (s.expires_at IS NULL OR s.expires_at > now());",
-        "options": {
-          "queryReplacement": "={{ [$('Вернуть событие').item.json.user_id] }}"
-        }
-      },
-      "id": "Прочитать состояние",
-      "name": "Прочитать состояние",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.6,
-      "position": [
-        -140,
-        220
-      ],
-      "credentials": {
-        "postgres": {
-          "id": "maxbotpg000000001",
-          "name": "maxbot-postgres"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "jsCode": "\n// ══════════════════════════════════════════════════════════════════════════\n// ЕДИНСТВЕННОЕ место, где описано поведение бота: экраны, кнопки, форма заказа.\n// Правится прямо в редакторе n8n, Save — и всё. Рестарт контейнера не нужен.\n//\n// Вход:  $('Вернуть событие') — событие,  $json — строка dialog_state.\n// Выход: { action, reply, state, order }\n//   action: 'reply' — просто ответить | 'order' — оформить заказ | 'rates' — сходить за курсом\n//   state:  новое состояние диалога или null, чтобы очистить\n// ══════════════════════════════════════════════════════════════════════════\n\nconst COMPANY = {\n  name: 'Тест Компания',\n  site: 'https://dev.max.ru/docs',\n  phone: '+78442000000',\n  phoneHuman: '+7 (8442) 00-00-00',\n  address: 'г. Волгоград, ул. Тестовая, 1',\n  lat: 48.707067,\n  lon: 44.516974,\n};\n\n// Каталог: ключ -> товар. Добавить позицию = добавить ключ, кнопки соберутся сами.\nconst CATALOG = {\n  a: {\n    title: 'Кофемашина «Утро»',\n    price: 24900,\n    short: 'зерновая, 15 бар',\n    desc: 'Зерновая кофемашина с автоматическим капучинатором.\\n\\n'\n        + '• давление 15 бар\\n• бункер 250 г зерна\\n• резервуар 1.8 л\\n'\n        + '• автоочистка от накипи\\n\\nГарантия 2 года.',\n  },\n  b: {\n    title: 'Чайник «Пар»',\n    price: 3400,\n    short: '1.7 л, нержавейка',\n    desc: 'Электрочайник из нержавеющей стали.\\n\\n'\n        + '• объём 1.7 л\\n• мощность 2200 Вт\\n• закипает за 4 минуты\\n'\n        + '• защита от включения без воды\\n\\nГарантия 1 год.',\n  },\n  c: {\n    title: 'Термос «Дорога»',\n    price: 1890,\n    short: '0.75 л, держит 12 ч',\n    desc: 'Вакуумный термос для поездок.\\n\\n'\n        + '• объём 0.75 л\\n• держит температуру 12 часов\\n'\n        + '• крышка-кружка\\n• не течёт в сумке\\n\\nГарантия 1 год.',\n  },\n};\n\nconst money = (n) => n.toLocaleString('ru-RU') + ' ₽';\nconst QTY_PRESETS = [1, 2, 5];\n// Сколько живёт незаконченная форма. Дальше её убирает prune_bot_events().\nconst FORM_TTL_MINUTES = 30;\n\n// ─────────────────────────────────────────── экраны\nfunction screenMain(ev) {\n  return {\n    text: `Привет, ${ev.name}! 👋\\nЯ демо-бот «${COMPANY.name}», собранный целиком в n8n.\\n\\nВыберите раздел:`,\n    buttons: [\n      [\n        { type: 'callback', text: '🏢 О компании', payload: 'about' },\n        { type: 'callback', text: '📋 Каталог', payload: 'catalog' },\n      ],\n      [\n        { type: 'callback', text: '💱 Курс валют', payload: 'rates' },\n        { type: 'callback', text: '🧾 Мои заказы', payload: 'myorders' },\n      ],\n      [{ type: 'request_geo_location', text: '📍 Я рядом?' }],\n      [{ type: 'link', text: '🌐 Документация MAX', url: 'https://dev.max.ru/docs' }],\n    ],\n  };\n}\n\nfunction screenAbout() {\n  return {\n    // clipboard кладёт телефон в буфер обмена — набирать руками не нужно.\n    text: `🏢 *${COMPANY.name}*\\n\\nЭто тестовая компания: витрина возможностей связки n8n + MAX. `\n        + `Товаров на складе нет, заказы никуда не уезжают, кроме нашей базы.\\n\\n`\n        + `📍 ${COMPANY.address}\\n📞 ${COMPANY.phoneHuman}`,\n    buttons: [\n      [{ type: 'link', text: '🌐 Наш сайт', url: COMPANY.site }],\n      [{ type: 'clipboard', text: '📋 Скопировать телефон', payload: COMPANY.phone }],\n      [{ type: 'callback', text: '⬅️ Назад', payload: 'main' }],\n    ],\n  };\n}\n\nfunction screenCatalog() {\n  const rows = Object.entries(CATALOG).map(([id, p]) => [\n    { type: 'callback', text: `${p.title} — ${money(p.price)}`, payload: `item:${id}` },\n  ]);\n  return {\n    text: '📋 *Каталог*\\n\\nВыберите товар, чтобы прочитать подробности:',\n    buttons: [...rows, [{ type: 'callback', text: '⬅️ В меню', payload: 'main' }]],\n  };\n}\n\nfunction screenItem(id) {\n  const p = CATALOG[id];\n  if (!p) return screenCatalog();\n  return {\n    text: `*${p.title}*\\n_${p.short}_\\n\\n${p.desc}\\n\\nЦена: *${money(p.price)}*`,\n    buttons: [\n      [{ type: 'callback', text: '🛒 Заказать', payload: `order:${id}` }],\n      [{ type: 'callback', text: '⬅️ В каталог', payload: 'catalog' }],\n    ],\n  };\n}\n\n// ─────────────────────────────────────────── форма заказа\nfunction askQty(id) {\n  const p = CATALOG[id];\n  return {\n    text: `🛒 Заказ: *${p.title}*\\nЦена: ${money(p.price)}\\n\\n`\n        + 'Шаг 1 из 2. Сколько штук? Нажмите кнопку или напишите число сообщением.',\n    buttons: [\n      QTY_PRESETS.map((n) => ({ type: 'callback', text: String(n), payload: `qty:${n}` })),\n      [{ type: 'callback', text: '✖️ Отменить', payload: 'cancel' }],\n    ],\n  };\n}\n\nfunction askPhone(id, qty) {\n  const p = CATALOG[id];\n  return {\n    text: `🛒 *${p.title}* × ${qty}\\nИтого: *${money(p.price * qty)}*\\n\\n`\n        + 'Шаг 2 из 2. Как с вами связаться? Отправьте контакт кнопкой '\n        + 'или напишите телефон сообщением.',\n    buttons: [\n      [{ type: 'request_contact', text: '📱 Отправить мой контакт' }],\n      [{ type: 'callback', text: '✖️ Отменить', payload: 'cancel' }],\n    ],\n  };\n}\n\n// Телефон из текста: 10-15 цифр, лишнее отбрасываем.\nfunction parsePhone(text) {\n  const digits = (text || '').replace(/[^\\d+]/g, '');\n  return /^\\+?\\d{10,15}$/.test(digits) ? digits : null;\n}\n\n// ─────────────────────────────────────────── сборка ответа\nconst ev = $('Вернуть событие').first().json;\nconst st = $json ?? {};\nconst state = { screen: st.screen ?? 'main', step: st.step ?? null, data: st.data ?? {} };\n\n// Нажатие кнопки отвечаем через /answers — сообщение меняется на месте.\n// Обычное сообщение отправляем через /messages.\nfunction envelope(scr) {\n  const body = {\n    text: scr.text,\n    format: 'markdown',\n    attachments: [{ type: 'inline_keyboard', payload: { buttons: scr.buttons } }],\n  };\n  if (ev.kind === 'callback' && ev.callback_id) {\n    return { api_path: 'answers', api_query: { callback_id: ev.callback_id }, body: { message: body } };\n  }\n  return { api_path: 'messages', api_query: { chat_id: String(ev.chat_id) }, body };\n}\n\nconst out = (scr, opts = {}) => [{\n  json: {\n    action: opts.action ?? 'reply',\n    reply: envelope(scr),\n    state: opts.state ?? null,\n    order: opts.order ?? null,\n    ttl_minutes: FORM_TTL_MINUTES,\n  },\n}];\n\nconst key = ev.kind === 'callback' ? (ev.payload || 'main') : '';\nconst text = ev.text || '';\n\n// ── 1. Форма заказа перехватывает ввод раньше меню: пока идёт шаг, число или\n//       телефон означают ответ на вопрос, а не команду.\nif (state.screen === 'order' && key !== 'cancel' && !key.startsWith('item:')\n    && key !== 'main' && key !== 'catalog') {\n  const pid = state.data.product_id;\n  const p = CATALOG[pid];\n\n  if (!p) return out(screenCatalog(), { state: null });   // товар исчез из каталога\n\n  if (state.step === 'qty') {\n    const qty = key.startsWith('qty:') ? Number(key.slice(4)) : Number(text.replace(/\\s/g, ''));\n    if (!Number.isInteger(qty) || qty < 1 || qty > 99) {\n      return out({\n        text: '🤔 Нужно целое число от 1 до 99.\\n\\n' + askQty(pid).text,\n        buttons: askQty(pid).buttons,\n      }, { state: { screen: 'order', step: 'qty', data: state.data } });\n    }\n    return out(askPhone(pid, qty),\n      { state: { screen: 'order', step: 'phone', data: { ...state.data, qty } } });\n  }\n\n  if (state.step === 'phone') {\n    const phone = ev.contact_phone ?? parsePhone(text);\n    if (!phone) {\n      return out({\n        text: '🤔 Не разобрал номер. Отправьте контакт кнопкой или напишите телефон цифрами.',\n        buttons: askPhone(pid, state.data.qty).buttons,\n      }, { state: { screen: 'order', step: 'phone', data: state.data } });\n    }\n    // Заказ собран. Сам ответ соберётся после вставки в БД — нужен его номер.\n    return [{\n      json: {\n        action: 'order',\n        reply: null,\n        state: null,\n        order: {\n          product_id: pid,\n          product_title: p.title,\n          qty: state.data.qty,\n          price_rub: p.price,\n          total_rub: p.price * state.data.qty,\n          phone,\n        },\n        ttl_minutes: FORM_TTL_MINUTES,\n      },\n    }];\n  }\n}\n\n// ── 2. Обычные экраны\nif (key === 'cancel') return out({\n  text: '✖️ Заказ отменён.',\n  buttons: [[{ type: 'callback', text: '⬅️ В меню', payload: 'main' }]],\n}, { state: null });\n\nif (key === 'about') return out(screenAbout());\nif (key === 'catalog') return out(screenCatalog());\nif (key.startsWith('item:')) return out(screenItem(key.slice(5)));\n\nif (key.startsWith('order:')) {\n  const id = key.slice(6);\n  if (!CATALOG[id]) return out(screenCatalog());\n  return out(askQty(id), { state: { screen: 'order', step: 'qty', data: { product_id: id } } });\n}\n\n// Курс валют уходит за данными во внешний API — ответ соберётся после запроса.\nif (key === 'rates' || /^\\/(rates|курс)$/i.test(text)) {\n  return [{ json: { action: 'rates', reply: null, state: null, order: null,\n                    ttl_minutes: FORM_TTL_MINUTES } }];\n}\n\nif (key === 'myorders' || /^\\/orders$/i.test(text)) {\n  return [{ json: { action: 'myorders', reply: null, state: null, order: null,\n                    ttl_minutes: FORM_TTL_MINUTES } }];\n}\n\n// ── 3. Текстовые команды и свободный ввод\nif (/^\\/whoami$/i.test(text)) return out({\n  // Свой user_id нужен, чтобы прописать себя в ADMIN_IDS и получать заказы.\n  text: `🪪 Ваш user_id: \\`${ev.user_id}\\`\\nchat_id диалога: \\`${ev.chat_id}\\`\\n\\n`\n      + 'Впишите user_id в ADMIN_IDS в .env, чтобы получать уведомления о заказах.',\n  buttons: [[{ type: 'callback', text: '⬅️ В меню', payload: 'main' }]],\n});\n\nif (ev.geo) return out({\n  text: `📍 Спасибо! Ваши координаты: ${ev.geo.lat.toFixed(4)}, ${ev.geo.lon.toFixed(4)}.\\n\\n`\n      + `Мы находимся по адресу ${COMPANY.address}.`,\n  buttons: [[{ type: 'callback', text: '⬅️ В меню', payload: 'main' }]],\n});\n\nif (/^эхо\\s+/i.test(text)) return out({\n  text: '🔁 Вы написали: ' + text.replace(/^эхо\\s+/i, ''),\n  buttons: [[{ type: 'callback', text: '⬅️ В меню', payload: 'main' }]],\n});\n\n// Всё остальное, включая /start и неизвестный payload, — главное меню.\nreturn out(screenMain(ev), { state: null });\n"
-      },
-      "id": "Сценарий",
-      "name": "Сценарий",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        60,
-        220
-      ]
     },
     {
       "parameters": {
@@ -301,19 +252,6 @@
     },
     {
       "parameters": {
-        "jsCode": "\n// Заказ уже в базе, её номер известен — собираем два сообщения:\n// подтверждение пользователю и уведомление админам. Обе уходят одной и той же\n// нодой отправки, просто разными items.\nconst ev = $('Вернуть событие').first().json;\nconst o = $('Сценарий').first().json.order;\nconst row = $json;                       // строка из «Создать заказ»\nconst money = (n) => Number(n).toLocaleString('ru-RU') + ' ₽';\n\nconst items = [{\n  json: {\n    api_path: 'messages',\n    api_query: { chat_id: String(ev.chat_id) },\n    body: {\n      text: `✅ Заказ *№${row.id}* принят!\\n\\n`\n          + `${o.product_title} × ${o.qty}\\nИтого: *${money(o.total_rub)}*\\n`\n          + `Телефон: ${o.phone}\\n\\nМенеджер свяжется с вами.`,\n      format: 'markdown',\n      attachments: [{ type: 'inline_keyboard', payload: { buttons: [\n        [{ type: 'callback', text: '🧾 Мои заказы', payload: 'myorders' }],\n        [{ type: 'callback', text: '⬅️ В меню', payload: 'main' }],\n      ] } }],\n    },\n  },\n}];\n\n// ADMIN_IDS — список user_id через запятую. Пусто — уведомлять некого,\n// заказ всё равно лежит в базе. Свой id можно узнать командой /whoami.\nconst admins = String($env.ADMIN_IDS ?? '').split(',').map((s) => s.trim()).filter(Boolean);\nfor (const id of admins) {\n  items.push({\n    json: {\n      api_path: 'messages',\n      api_query: { user_id: String(id) },\n      body: {\n        text: `🔔 *Новый заказ №${row.id}*\\n\\n`\n            + `${o.product_title} × ${o.qty}\\nСумма: ${money(o.total_rub)}\\n`\n            + `Телефон: ${o.phone}\\n`\n            + `Клиент: ${ev.name}${ev.username ? ' (@' + ev.username + ')' : ''}, id ${ev.user_id}`,\n        format: 'markdown',\n      },\n    },\n  });\n}\n\nreturn items;\n"
-      },
-      "id": "Подтверждение и админам",
-      "name": "Подтверждение и админам",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        900,
-        -40
-      ]
-    },
-    {
-      "parameters": {
         "url": "https://www.cbr-xml-daily.ru/daily_json.js",
         "options": {
           "timeout": 15000,
@@ -335,19 +273,6 @@
       "retryOnFail": true,
       "maxTries": 2,
       "waitBetweenTries": 2000
-    },
-    {
-      "parameters": {
-        "jsCode": "\n// Ответ ЦБ РФ -> экран с курсами. Это и есть главный довод в пользу n8n:\n// сходить во внешний API и подмешать данные в ответ — одна нода HTTP Request,\n// без единой строки инфраструктурного кода.\nconst ev = $('Вернуть событие').first().json;\n// Нода настроена на responseFormat: json, но если ответ всё же придёт строкой\n// (например, ЦБ сменит content-type), разберём его сами — экран не должен пустеть.\nconst raw = $json ?? {};\nconst d = raw.Valute ? raw : JSON.parse(raw.data ?? raw.body ?? '{}');\nconst v = d.Valute ?? {};\nconst fmt = (c) => (v[c] ? `${v[c].Name}: *${v[c].Value.toFixed(2)} ₽* (${v[c].Previous > v[c].Value ? '↓' : '↑'})` : null);\nconst lines = ['USD', 'EUR', 'CNY'].map(fmt).filter(Boolean);\nconst date = (d.Date ?? '').slice(0, 10).split('-').reverse().join('.');\n\nconst body = {\n  text: `💱 *Курс ЦБ РФ* на ${date}\\n\\n${lines.join('\\n')}`,\n  format: 'markdown',\n  attachments: [{ type: 'inline_keyboard', payload: { buttons: [\n    [{ type: 'callback', text: '🔄 Обновить', payload: 'rates' }],\n    [{ type: 'callback', text: '⬅️ В меню', payload: 'main' }],\n  ] } }],\n};\n\nif (ev.kind === 'callback' && ev.callback_id) {\n  return [{ json: { api_path: 'answers', api_query: { callback_id: ev.callback_id }, body: { message: body } } }];\n}\nreturn [{ json: { api_path: 'messages', api_query: { chat_id: String(ev.chat_id) }, body } }];\n"
-      },
-      "id": "Показать курс",
-      "name": "Показать курс",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        900,
-        120
-      ]
     },
     {
       "parameters": {
@@ -375,7 +300,102 @@
     },
     {
       "parameters": {
-        "jsCode": "\n// Список заказов пользователя из базы. Показывает чтение из Postgres в ответ\n// на нажатие кнопки.\nconst ev = $('Вернуть событие').first().json;\nconst rows = $input.all().map((i) => i.json).filter((r) => r.id);\nconst money = (n) => Number(n).toLocaleString('ru-RU') + ' ₽';\n\nconst text = rows.length\n  ? '🧾 *Ваши заказы*\\n\\n' + rows.map((r) =>\n      `*№${r.id}* — ${r.product_title} × ${r.qty}\\n${money(r.total_rub)} · ${r.status} · `\n      + new Date(r.created_at).toLocaleDateString('ru-RU')).join('\\n\\n')\n  : '🧾 Заказов пока нет.\\n\\nЗагляните в каталог — оформление занимает два шага.';\n\nconst body = {\n  text,\n  format: 'markdown',\n  attachments: [{ type: 'inline_keyboard', payload: { buttons: [\n    [{ type: 'callback', text: '📋 В каталог', payload: 'catalog' }],\n    [{ type: 'callback', text: '⬅️ В меню', payload: 'main' }],\n  ] } }],\n};\n\nif (ev.kind === 'callback' && ev.callback_id) {\n  return [{ json: { api_path: 'answers', api_query: { callback_id: ev.callback_id }, body: { message: body } } }];\n}\nreturn [{ json: { api_path: 'messages', api_query: { chat_id: String(ev.chat_id) }, body } }];\n"
+        "content": "## Движок\n\nТексты, кнопки и товары — в таблицах **bot_screens** и **bot_products** (форма «Админка контента»). «Сценарий» решает только *какой* экран показать и что запомнить.\n\nОтправка — отдельный сценарий «Отправить в MAX»: один item = одно сообщение `{ chat_id, user_id, callback_id, text, buttons }`.",
+        "width": 620,
+        "height": 220,
+        "color": 5
+      },
+      "id": "note--260--280",
+      "name": "Sticky Note -260--280",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -260,
+        -280
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "={{ JSON.stringify($('Событие от источника').first().json) }}",
+        "options": {}
+      },
+      "id": "Вернуть событие",
+      "name": "Вернуть событие",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -320,
+        220
+      ],
+      "notes": "Ноды Postgres отдают результат запроса, а не событие — возвращаем исходное.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Состояние диалога пользователя + весь контент бота одной строкой.\n-- Таблицы контента крошечные, поэтому тянем целиком: сценарию не нужно\n-- знать заранее, какой экран понадобится.\nSELECT COALESCE(s.screen, 'main')      AS screen,\n       s.step                          AS step,\n       COALESCE(s.data, '{}'::jsonb)   AS data,\n       (SELECT jsonb_object_agg(key, jsonb_build_object('text', text, 'buttons', buttons))\n          FROM bot_screens)            AS screens,\n       (SELECT COALESCE(jsonb_agg(to_jsonb(p) ORDER BY p.sort, p.id), '[]'::jsonb)\n          FROM bot_products p WHERE p.active) AS products\n  FROM (SELECT 1) AS one\n  LEFT JOIN dialog_state s ON s.user_id = $1\n                          AND (s.expires_at IS NULL OR s.expires_at > now());",
+        "options": {
+          "queryReplacement": "={{ [$('Вернуть событие').item.json.user_id] }}"
+        }
+      },
+      "id": "Состояние и контент",
+      "name": "Состояние и контент",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -140,
+        220
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "maxbotpg000000001",
+          "name": "maxbot-postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Логика бота: какой экран показать и что запомнить между сообщениями.\n// Тексты, кнопки и товары НЕ здесь — они в таблицах bot_screens и bot_products\n// (правятся формой «Админка контента» в n8n или в базе). Сюда они приходят\n// строкой из ноды «Состояние и контент»: $json.screens, $json.products.\n//\n// Вход:  $('Вернуть событие') — событие, $json — состояние диалога + контент.\n// Выход: { action, reply, state, order }\n//   action: 'reply' — показать экран | 'order' — оформить заказ |\n//           'rates' — сходить за курсом | 'myorders' — выбрать заказы\n//   reply:  { chat_id, user_id, callback_id, text, buttons } — вход «Отправить в MAX»\n//   state:  новое состояние диалога или null, чтобы очистить\n\nconst ev = $('Вернуть событие').first().json;\nconst st = $json ?? {};\nconst SCREENS = st.screens ?? {};\nconst PRODUCTS = st.products ?? [];                       // уже отсортированы по sort\nconst product = (id) => PRODUCTS.find((p) => p.id === id);\nconst state = { screen: st.screen ?? 'main', step: st.step ?? null, data: st.data ?? {} };\n\n// Сколько живёт незаконченная форма. Дальше её убирает prune_bot_events().\nconst FORM_TTL_MINUTES = 30;\nconst money = (n) => Number(n).toLocaleString('ru-RU') + ' ₽';\n\n// ─────────────────────────────────────────── шаблоны\n// {name} в тексте или кнопке заменяется на vars.name; неизвестные остаются как есть.\nconst fill = (v, vars) =>\n  typeof v === 'string' ? v.replace(/\\{(\\w+)\\}/g, (m, k) => (k in vars ? String(vars[k]) : m))\n  : Array.isArray(v) ? v.map((x) => fill(x, vars))\n  : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fill(x, vars)]))\n  : v;\n\nconst base = { name: ev.name ?? '', user_id: ev.user_id, chat_id: ev.chat_id };\nconst productVars = (p) => ({ id: p.id, title: p.title, short: p.short, description: p.description, price: money(p.price_rub) });\n\n// Экран из bot_screens с подстановкой. extraRows — собранные в коде ряды кнопок\n// (каталог), они идут перед кнопками из шаблона.\nfunction screen(key, vars = {}, extraRows = []) {\n  const s = SCREENS[key] ?? {\n    text: `⚠️ Экран «${key}» не найден в bot_screens.`,\n    buttons: [[{ type: 'callback', text: '⬅️ В меню', payload: 'main' }]],\n  };\n  const all = { ...base, ...vars };\n  return { text: fill(s.text, all), buttons: [...extraRows, ...fill(s.buttons ?? [], all)] };\n}\n\nconst catalog = () => screen('catalog', {}, PRODUCTS.filter((p) => p.active !== false).map((p) => [{\n  type: 'callback',\n  text: fill(SCREENS.catalog_button?.text ?? '{title} — {price}', productVars(p)),\n  payload: `item:${p.id}`,\n}]));\n\n// Телефон из текста: 10-15 цифр, лишнее отбрасываем.\nfunction parsePhone(text) {\n  const digits = (text || '').replace(/[^\\d+]/g, '');\n  return /^\\+?\\d{10,15}$/.test(digits) ? digits : null;\n}\n\n// ─────────────────────────────────────────── сборка ответа\n// Адрес ответа для «Отправить в MAX»: нажатие кнопки — правка на месте, иначе новое сообщение.\nconst reply = (scr) => ({\n  chat_id: ev.chat_id, user_id: ev.user_id,\n  callback_id: ev.kind === 'callback' ? (ev.callback_id ?? null) : null,\n  ...scr,\n});\nconst out = (scr, opts = {}) => [{\n  json: {\n    action: opts.action ?? 'reply',\n    reply: scr ? reply(scr) : null,\n    state: opts.state ?? null,\n    order: opts.order ?? null,\n    ttl_minutes: FORM_TTL_MINUTES,\n  },\n}];\n\nconst key = ev.kind === 'callback' ? (ev.payload || 'main') : '';\nconst text = ev.text || '';\n\n// ── 1. Форма заказа перехватывает ввод раньше меню: пока идёт шаг, число или\n//       телефон означают ответ на вопрос, а не команду.\nif (state.screen === 'order' && key !== 'cancel' && !key.startsWith('item:')\n    && key !== 'main' && key !== 'catalog') {\n  const pid = state.data.product_id;\n  const p = product(pid);\n  if (!p) return out(catalog(), { state: null });          // товар исчез из каталога\n  const pv = productVars(p);\n\n  if (state.step === 'qty') {\n    const qty = key.startsWith('qty:') ? Number(key.slice(4)) : Number(text.replace(/\\s/g, ''));\n    if (!Number.isInteger(qty) || qty < 1 || qty > 99) {\n      return out(screen('order_qty_bad', pv), { state: { screen: 'order', step: 'qty', data: state.data } });\n    }\n    return out(screen('order_phone', { ...pv, qty, total: money(p.price_rub * qty) }),\n      { state: { screen: 'order', step: 'phone', data: { ...state.data, qty } } });\n  }\n\n  if (state.step === 'phone') {\n    const phone = ev.contact_phone ?? parsePhone(text);\n    if (!phone) {\n      return out(screen('order_phone_bad', pv), { state: { screen: 'order', step: 'phone', data: state.data } });\n    }\n    // Заказ собран. Ответ соберётся после вставки в БД — нужен его номер.\n    return out(null, { action: 'order', state: null, order: {\n      product_id: pid, product_title: p.title, qty: state.data.qty,\n      price_rub: p.price_rub, total_rub: p.price_rub * state.data.qty, phone,\n    } });\n  }\n}\n\n// ── 2. Экраны по кнопкам\nif (key === 'cancel') return out(screen('cancel'), { state: null });\nif (key === 'catalog') return out(catalog());\nif (key.startsWith('item:')) {\n  const p = product(key.slice(5));\n  return out(p ? screen('item', productVars(p)) : catalog());\n}\nif (key.startsWith('order:')) {\n  const p = product(key.slice(6));\n  if (!p) return out(catalog());\n  return out(screen('order_qty', productVars(p)), { state: { screen: 'order', step: 'qty', data: { product_id: p.id } } });\n}\n// Курс и заказы уходят за данными — экран соберётся после запроса.\nif (key === 'rates' || /^\\/(rates|курс)$/i.test(text)) return out(null, { action: 'rates' });\nif (key === 'myorders' || /^\\/orders$/i.test(text)) return out(null, { action: 'myorders' });\n\n// ── 3. Текстовые команды и вложения\nif (/^\\/whoami$/i.test(text)) return out(screen('whoami'));\nif (ev.geo) return out(screen('geo', { lat: ev.geo.lat.toFixed(4), lon: ev.geo.lon.toFixed(4) }));\nif (/^эхо\\s+/i.test(text)) return out(screen('echo', { echo: text.replace(/^эхо\\s+/i, '') }));\n\n// ── 4. Любой известный экран по его ключу (about, delivery, faq… — что угодно\n//       из bot_screens). Новый экран = строка в таблице + кнопка с таким payload.\nif (key && key !== 'main' && SCREENS[key]) return out(screen(key));\n\n// Всё остальное, включая /start и неизвестный payload, — главное меню.\nreturn out(screen('main'), { state: null });\n"
+      },
+      "id": "Сценарий",
+      "name": "Сценарий",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        60,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Заказ уже в базе, номер известен. Собираем два сообщения по шаблонам\n// order_done (клиенту) и order_admin (каждому из ADMIN_IDS) — оба уходят\n// одним «Отправить в MAX», просто разными items.\nconst ev = $('Вернуть событие').first().json;\nconst S = $('Состояние и контент').first().json.screens ?? {};\nconst o = $('Сценарий').first().json.order;\nconst row = $json;                                   // строка из «Создать заказ»\nconst money = (n) => Number(n).toLocaleString('ru-RU') + ' ₽';\nconst vars = {\n  order_id: row.id, title: o.product_title, qty: o.qty, total: money(o.total_rub), phone: o.phone,\n  client: `${ev.name}${ev.username ? ' (@' + ev.username + ')' : ''}, id ${ev.user_id}`,\n};\nconst fill = (s) => (s ?? '').replace(/\\{(\\w+)\\}/g, (m, k) => (k in vars ? String(vars[k]) : m));\n\nconst items = [{ json: {\n  chat_id: ev.chat_id, user_id: ev.user_id, callback_id: null,\n  text: fill(S.order_done?.text ?? '✅ Заказ №{order_id} принят!'),\n  buttons: S.order_done?.buttons ?? [],\n} }];\n\n// ADMIN_IDS — user_id через запятую. Пусто — уведомлять некого, заказ всё равно\n// лежит в базе. Свой id подскажет /whoami.\nconst admins = String($env.ADMIN_IDS ?? '').split(',').map((s) => s.trim()).filter(Boolean);\nfor (const id of admins) {\n  items.push({ json: {\n    chat_id: null, user_id: id, callback_id: null,\n    text: fill(S.order_admin?.text ?? '🔔 Новый заказ №{order_id}'),\n    buttons: S.order_admin?.buttons ?? [],\n  } });\n}\nreturn items;\n"
+      },
+      "id": "Подтверждение и админам",
+      "name": "Подтверждение и админам",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Ответ ЦБ РФ -> экран rates. Главный довод в пользу n8n: сходить во внешний API\n// и подмешать данные в ответ — одна нода HTTP Request.\nconst ev = $('Вернуть событие').first().json;\nconst S = $('Состояние и контент').first().json.screens ?? {};\n// Нода настроена на JSON, но если ответ придёт строкой (ЦБ сменит content-type),\n// разберём сами — экран не должен пустеть.\nconst raw = $json ?? {};\nconst d = raw.Valute ? raw : JSON.parse(raw.data ?? raw.body ?? '{}');\nconst v = d.Valute ?? {};\nconst fmt = (c) => (v[c] ? `${v[c].Name}: *${v[c].Value.toFixed(2)} ₽* (${v[c].Previous > v[c].Value ? '↓' : '↑'})` : null);\nconst vars = {\n  rates_lines: ['USD', 'EUR', 'CNY'].map(fmt).filter(Boolean).join('\\n'),\n  rates_date: (d.Date ?? '').slice(0, 10).split('-').reverse().join('.'),\n};\nconst fill = (s) => (s ?? '').replace(/\\{(\\w+)\\}/g, (m, k) => (k in vars ? String(vars[k]) : m));\nreturn [{ json: {\n  chat_id: ev.chat_id, user_id: ev.user_id,\n  callback_id: ev.kind === 'callback' ? (ev.callback_id ?? null) : null,\n  text: fill(S.rates?.text ?? '💱 {rates_lines}'),\n  buttons: S.rates?.buttons ?? [],\n} }];\n"
+      },
+      "id": "Показать курс",
+      "name": "Показать курс",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Список заказов пользователя -> экран myorders или myorders_empty.\nconst ev = $('Вернуть событие').first().json;\nconst S = $('Состояние и контент').first().json.screens ?? {};\nconst rows = $input.all().map((i) => i.json).filter((r) => r.id);\nconst money = (n) => Number(n).toLocaleString('ru-RU') + ' ₽';\nconst orders = rows.map((r) =>\n  `*№${r.id}* — ${r.product_title} × ${r.qty}\\n${money(r.total_rub)} · ${r.status} · `\n  + new Date(r.created_at).toLocaleDateString('ru-RU')).join('\\n\\n');\nconst s = rows.length ? S.myorders : S.myorders_empty;\nreturn [{ json: {\n  chat_id: ev.chat_id, user_id: ev.user_id,\n  callback_id: ev.kind === 'callback' ? (ev.callback_id ?? null) : null,\n  text: (s?.text ?? '{orders}').replace('{orders}', orders),\n  buttons: s?.buttons ?? [],\n} }];\n"
       },
       "id": "Показать заказы",
       "name": "Показать заказы",
@@ -388,75 +408,41 @@
     },
     {
       "parameters": {
-        "jsCode": "// Сценарий уже собрал конверт — просто передаём его отправке.\nreturn [{ json: $('Сценарий').first().json.reply }];"
+        "mode": "raw",
+        "jsonOutput": "={{ JSON.stringify($('Сценарий').item.json.reply) }}",
+        "options": {}
       },
       "id": "Готовый ответ",
       "name": "Готовый ответ",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
       "position": [
         700,
         440
-      ]
+      ],
+      "notes": "Сценарий уже собрал экран — передаём его отправке.",
+      "notesInFlow": true
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "={{ $env.MAX_API_BASE_URL }}/{{ $json.api_path }}",
-        "sendQuery": true,
-        "specifyQuery": "json",
-        "jsonQuery": "={{ JSON.stringify($json.api_query) }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "={{ $env.MAX_BOT_TOKEN }}"
-            }
-          ]
+        "workflowId": {
+          "__rl": true,
+          "value": "maxbotsend000001",
+          "mode": "id"
         },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "mode": "once",
         "options": {
-          "timeout": 30000
+          "waitForSubWorkflow": true
         }
       },
-      "id": "POST в MAX API",
-      "name": "POST в MAX API",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "id": "Отправить в MAX",
+      "name": "Отправить в MAX",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
       "position": [
         1160,
         220
-      ],
-      "retryOnFail": true,
-      "maxTries": 3,
-      "waitBetweenTries": 5000,
-      "onError": "continueErrorOutput"
-    },
-    {
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "INSERT INTO bot_send_failures (api_path, user_id, chat_id, status_code, error, body)\nVALUES ($1, $2, $3, $4, $5, $6::jsonb);",
-        "options": {
-          "queryReplacement": "={{ [$json.api_path || 'unknown', $('Вернуть событие').item.json.user_id, $('Вернуть событие').item.json.chat_id, $json.error?.status ?? $json.error?.httpCode ?? null, ($json.error?.message ?? $json.message ?? 'unknown').toString().slice(0, 2000), JSON.stringify($json.error ?? $json)] }}"
-        }
-      },
-      "id": "Записать ошибку отправки",
-      "name": "Записать ошибку отправки",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.6,
-      "position": [
-        1400,
-        380
-      ],
-      "credentials": {
-        "postgres": {
-          "id": "maxbotpg000000001",
-          "name": "maxbot-postgres"
-        }
-      }
+      ]
     }
   ],
   "connections": {
@@ -509,14 +495,14 @@
       "main": [
         [
           {
-            "node": "Прочитать состояние",
+            "node": "Состояние и контент",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Прочитать состояние": {
+    "Состояние и контент": {
       "main": [
         [
           {
@@ -596,7 +582,7 @@
       "main": [
         [
           {
-            "node": "POST в MAX API",
+            "node": "Отправить в MAX",
             "type": "main",
             "index": 0
           }
@@ -618,7 +604,7 @@
       "main": [
         [
           {
-            "node": "POST в MAX API",
+            "node": "Отправить в MAX",
             "type": "main",
             "index": 0
           }
@@ -640,7 +626,7 @@
       "main": [
         [
           {
-            "node": "POST в MAX API",
+            "node": "Отправить в MAX",
             "type": "main",
             "index": 0
           }
@@ -651,19 +637,7 @@
       "main": [
         [
           {
-            "node": "POST в MAX API",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "POST в MAX API": {
-      "main": [
-        [],
-        [
-          {
-            "node": "Записать ошибку отправки",
+            "node": "Отправить в MAX",
             "type": "main",
             "index": 0
           }

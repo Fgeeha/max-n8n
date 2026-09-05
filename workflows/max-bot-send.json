@@ -1,0 +1,270 @@
+{
+  "id": "maxbotsend000001",
+  "name": "MAX bot — отправить в MAX",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Отправить в MAX — переиспользуемый элемент\n\nВход (один item на сообщение):\n```\n{ chat_id, user_id, callback_id, text, buttons }\n```\n- `callback_id` задан — ответ на кнопку через `POST /answers` (сообщение меняется на месте)\n- иначе — новое сообщение через `POST /messages` в `chat_id`, а если его нет — пользователю `user_id`\n- `buttons` — ряды inline-клавиатуры MAX, пусто — без клавиатуры\n\nОшибки MAX API попадают в `bot_send_failures`. Кода здесь нет.",
+        "width": 640,
+        "height": 300,
+        "color": 5
+      },
+      "id": "note--200--260",
+      "name": "Sticky Note -200--260",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -200,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "Что отправить",
+      "name": "Что отправить",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -200,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              },
+              "leftValue": "={{ $json.callback_id ?? \"\" }}",
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "Нажатие кнопки?",
+      "name": "Нажатие кнопки?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        40,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "api_path",
+              "name": "api_path",
+              "value": "answers",
+              "type": "string"
+            },
+            {
+              "id": "api_query",
+              "name": "api_query",
+              "value": "={{ { callback_id: $json.callback_id } }}",
+              "type": "object"
+            },
+            {
+              "id": "body",
+              "name": "body",
+              "value": "={{ { message: Object.assign({ text: $json.text, format: 'markdown' }, ($json.buttons ?? []).length ? { attachments: [{ type: 'inline_keyboard', payload: { buttons: $json.buttons } }] } : {}) } }}",
+              "type": "object"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "Ответ на кнопку",
+      "name": "Ответ на кнопку",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        300,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "api_path",
+              "name": "api_path",
+              "value": "messages",
+              "type": "string"
+            },
+            {
+              "id": "api_query",
+              "name": "api_query",
+              "value": "={{ $json.chat_id ? { chat_id: String($json.chat_id) } : { user_id: String($json.user_id) } }}",
+              "type": "object"
+            },
+            {
+              "id": "body",
+              "name": "body",
+              "value": "={{ Object.assign({ text: $json.text, format: 'markdown' }, ($json.buttons ?? []).length ? { attachments: [{ type: 'inline_keyboard', payload: { buttons: $json.buttons } }] } : {}) }}",
+              "type": "object"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "Новое сообщение",
+      "name": "Новое сообщение",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        300,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MAX_API_BASE_URL }}/{{ $json.api_path }}",
+        "sendQuery": true,
+        "specifyQuery": "json",
+        "jsonQuery": "={{ JSON.stringify($json.api_query) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $env.MAX_BOT_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "POST в MAX API",
+      "name": "POST в MAX API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        580,
+        120
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO bot_send_failures (api_path, user_id, chat_id, status_code, error, body)\nVALUES ($1, $2, $3, $4, $5, $6::jsonb);",
+        "options": {
+          "queryReplacement": "={{ [$json.api_path || 'unknown', $json.user_id ?? null, $json.chat_id ?? null, $json.error?.status ?? $json.error?.httpCode ?? null, ($json.error?.message ?? $json.message ?? 'unknown').toString().slice(0, 2000), JSON.stringify($json.error ?? $json)] }}"
+        }
+      },
+      "id": "Записать ошибку отправки",
+      "name": "Записать ошибку отправки",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        840,
+        220
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "maxbotpg000000001",
+          "name": "maxbot-postgres"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Что отправить": {
+      "main": [
+        [
+          {
+            "node": "Нажатие кнопки?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Нажатие кнопки?": {
+      "main": [
+        [
+          {
+            "node": "Ответ на кнопку",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Новое сообщение",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ответ на кнопку": {
+      "main": [
+        [
+          {
+            "node": "POST в MAX API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Новое сообщение": {
+      "main": [
+        [
+          {
+            "node": "POST в MAX API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST в MAX API": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Записать ошибку отправки",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner"
+  }
+}
