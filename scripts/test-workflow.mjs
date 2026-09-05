@@ -11,33 +11,59 @@ const hook = load('max-bot-webhook.json');
 
 const nodeOf = (wf, name) => {
   const n = wf.nodes.find((x) => x.name === name);
-  assert.ok(n, `в ${wf.name} нет ноды «${name}»`);
+  assert.ok(n, `в «${wf.name}» нет ноды «${name}»`);
   return n;
 };
 const code = (wf, name) => nodeOf(wf, name).parameters.jsCode;
 
+const ENV = { ONLY_DIALOGS: 'true', TZ: 'Europe/Moscow', ADMIN_IDS: '' };
+
 // Мини-песочница вместо рантайма n8n.
-function run(js, { json, items, env = {} }) {
-  const $input = { first: () => ({ json: items?.[0] ?? json }), all: () => (items ?? [json]).map((j) => ({ json: j })) };
-  const fn = new Function('$input', '$json', '$env', js);
-  return fn($input, json, { ONLY_DIALOGS: 'true', TZ: 'Europe/Moscow', ...env });
+function run(js, { json, items, prev = {}, env = {} } = {}) {
+  const all = items ?? [json];
+  const $input = { first: () => ({ json: all[0] }), all: () => all.map((j) => ({ json: j })) };
+  // $('Имя ноды') — доступ к выходу предыдущей ноды.
+  const $ = (name) => {
+    assert.ok(name in prev, `сценарий обращается к ноде «${name}», которой нет в фикстуре`);
+    return { first: () => ({ json: prev[name] }), item: { json: prev[name] } };
+  };
+  return new Function('$input', '$json', '$env', '$', js)($input, json, { ...ENV, ...env }, $);
 }
 
 const parsePoll = code(poll, 'Разобрать updates');
 const parseHook = code(hook, 'Разобрать апдейт');
-const menu = code(core, 'Меню');
-const echo = code(core, 'Эхо-ответ');
+const brain = code(core, 'Сценарий');
+const orderReply = code(core, 'Подтверждение и админам');
+const ratesReply = code(core, 'Показать курс');
+const ordersReply = code(core, 'Показать заказы');
 
-const dialogMsg = (mid, text) => ({
+const dialogMsg = (mid, text, extra = {}) => ({
   update_type: 'message_created', timestamp: 1,
   message: {
     recipient: { chat_type: 'dialog', chat_id: 42, user_id: 7 },
     sender: { user_id: 7, first_name: 'Никита', username: 'nk' },
-    body: { mid, text },
+    body: { mid, text, ...extra },
   },
 });
 
-// --- 1. polling: групповые чаты и боты отбрасываются -----------------------
+const ev = (over = {}) => ({
+  kind: 'message', update_type: 'message_created', chat_id: 42, user_id: 7,
+  name: 'Никита', username: 'nk', text: '', payload: null, callback_id: null,
+  contact_phone: null, geo: null, ...over,
+});
+const cbEv = (payload) => ev({ kind: 'callback', payload, callback_id: 'cb1', text: '' });
+
+// думаем сценарием: state — строка dialog_state
+const think = (event, state = { screen: 'main', step: null, data: {} }) =>
+  run(brain, { json: state, prev: { 'Вернуть событие': event } })[0].json;
+
+const buttons = (r) => {
+  const b = r.body.attachments?.[0]?.payload?.buttons ?? r.body.message?.attachments?.[0]?.payload?.buttons;
+  return (b ?? []).flat();
+};
+const textOf = (r) => r.body.text ?? r.body.message.text;
+
+// ─── 1. Нормализация ────────────────────────────────────────────────────────
 const out = run(parsePoll, {
   items: [{
     marker: 777,
@@ -49,92 +75,165 @@ const out = run(parsePoll, {
   }],
 });
 assert.equal(out.length, 1, 'должен остаться только личный диалог от человека');
-assert.deepEqual(
-  { kind: out[0].json.kind, chat_id: out[0].json.chat_id, name: out[0].json.name, text: out[0].json.text },
-  { kind: 'message', chat_id: 42, name: 'Никита', text: '/start' },
-);
-assert.equal(out[0].json.dedup_key, 'msg:m2', 'ключ идемпотентности строится из mid');
+assert.equal(out[0].json.dedup_key, 'msg:m2');
+assert.equal(out[0].json.text, '/start');
 
-// --- 2. ONLY_DIALOGS=false выпускает бота в группы -------------------------
-const grp = run(parsePoll, {
+assert.equal(run(parsePoll, {
   items: [{ marker: 1, updates: [{ update_type: 'message_created', message: { recipient: { chat_type: 'chat', chat_id: -1 }, sender: { user_id: 5, name: 'Ж' }, body: { mid: 'g1', text: 'ok' } } }] }],
   env: { ONLY_DIALOGS: 'false' },
+}).length, 1, 'ONLY_DIALOGS=false должен пропускать групповые чаты');
+
+assert.deepEqual(run(parseHook, { items: [{ body: dialogMsg('m2', '/start') }] })[0].json, out[0].json,
+  'polling и webhook обязаны давать одну структуру');
+
+// Телефон из вложения contact (кнопка request_contact).
+const withContact = run(parseHook, { items: [{ body: dialogMsg('m4', '', {
+  attachments: [{ type: 'contact', payload: { vcf_info: 'BEGIN:VCARD\nTEL;TYPE=CELL:+7 (900) 123-45-67\nEND:VCARD' } }] }) }] });
+assert.equal(withContact[0].json.contact_phone, '+79001234567', 'телефон должен доставаться из vCard');
+
+// Геопозиция из вложения location.
+const withGeo = run(parseHook, { items: [{ body: dialogMsg('m5', '', {
+  attachments: [{ type: 'location', payload: { latitude: 48.7, longitude: 44.5 } }] }) }] });
+assert.deepEqual(withGeo[0].json.geo, { lat: 48.7, lon: 44.5 });
+
+assert.equal(run(parseHook, { items: [{ body: { update_type: 'bot_started', timestamp: 3,
+  message: { recipient: { chat_type: 'dialog', chat_id: 42, user_id: 7 } }, user: { user_id: 7, first_name: 'Н' } } }] })[0].json.text,
+  '/start', 'bot_started трактуется как /start');
+
+// ─── 2. Экраны: главное меню, компания, каталог, карточка ──────────────────
+const main = think(ev({ text: '/start' }));
+assert.equal(main.action, 'reply');
+assert.equal(main.reply.api_path, 'messages');
+assert.ok(textOf(main.reply).includes('Никита'), 'имя подставляется в приветствие');
+
+const about = think(cbEv('about'));
+assert.equal(about.reply.api_path, 'answers', 'нажатие кнопки меняет сообщение на месте');
+assert.ok(textOf(about.reply).includes('Тест Компания'));
+const ab = buttons(about.reply);
+assert.ok(ab.some((b) => b.type === 'link' && b.url), 'на экране компании нужна кнопка-ссылка');
+const clip = ab.find((b) => b.type === 'clipboard');
+assert.ok(clip && /^\+\d{10,}$/.test(clip.payload), 'кнопка clipboard должна нести телефон');
+assert.ok(ab.some((b) => b.payload === 'main'), 'нужна кнопка «Назад»');
+
+const cat = think(cbEv('catalog'));
+assert.ok(buttons(cat.reply).filter((b) => String(b.payload).startsWith('item:')).length >= 3,
+  'в каталоге должны быть товары');
+
+const item = think(cbEv('item:a'));
+assert.ok(buttons(item.reply).some((b) => b.payload === 'order:a'), 'в карточке нужна кнопка «Заказать»');
+assert.ok(buttons(item.reply).some((b) => b.payload === 'catalog'), 'и возврат в каталог');
+
+// ─── 3. Форма заказа: товар -> количество -> телефон ───────────────────────
+const step1 = think(cbEv('order:a'));
+assert.deepEqual({ screen: step1.state.screen, step: step1.state.step }, { screen: 'order', step: 'qty' });
+assert.equal(step1.state.data.product_id, 'a', 'id товара запоминается автоматически');
+
+const inQty = { screen: 'order', step: 'qty', data: { product_id: 'a' } };
+// количество кнопкой
+const step2 = think(cbEv('qty:2'), inQty);
+assert.equal(step2.state.step, 'phone');
+assert.equal(step2.state.data.qty, 2);
+// количество текстом
+assert.equal(think(ev({ text: '3' }), inQty).state.data.qty, 3, 'количество можно ввести текстом');
+// мусор не двигает форму вперёд
+const bad = think(ev({ text: 'много' }), inQty);
+assert.equal(bad.state.step, 'qty', 'некорректное количество оставляет на том же шаге');
+assert.ok(textOf(bad.reply).includes('от 1 до 99'));
+
+const inPhone = { screen: 'order', step: 'phone', data: { product_id: 'a', qty: 2 } };
+// телефон кнопкой «отправить контакт»
+const done = think(ev({ contact_phone: '+79001234567' }), inPhone);
+assert.equal(done.action, 'order');
+assert.equal(done.state, null, 'после оформления форма закрывается');
+assert.deepEqual(
+  { p: done.order.product_id, q: done.order.qty, ph: done.order.phone, total: done.order.total_rub },
+  { p: 'a', q: 2, ph: '+79001234567', total: done.order.price_rub * 2 },
+);
+// телефон текстом
+assert.equal(think(ev({ text: '8 900 123-45-67' }), inPhone).order.phone, '89001234567');
+// мусор вместо телефона
+assert.equal(think(ev({ text: 'позвоните мне' }), inPhone).state.step, 'phone');
+// отмена
+const cancelled = think(cbEv('cancel'), inPhone);
+assert.equal(cancelled.state, null, 'отмена очищает состояние');
+
+// Пока идёт форма, «3» — это количество, а не команда. Но кнопки навигации
+// обязаны работать всегда, иначе из формы не выйти.
+assert.equal(think(cbEv('main'), inQty).action, 'reply');
+assert.equal(think(cbEv('catalog'), inQty).reply.body.message.text.includes('Каталог'), true);
+
+// ─── 4. Прочие сценарии ────────────────────────────────────────────────────
+assert.equal(think(cbEv('rates')).action, 'rates', 'курс валют уходит во внешний API');
+assert.equal(think(cbEv('myorders')).action, 'myorders');
+assert.ok(textOf(think(ev({ text: '/whoami' })).reply).includes('7'), '/whoami показывает user_id');
+assert.ok(textOf(think(ev({ text: 'эхо привет' })).reply).includes('привет'));
+assert.ok(textOf(think(ev({ geo: { lat: 48.7, lon: 44.5 } })).reply).includes('48.7'),
+  'геопозиция подтверждается координатами');
+assert.equal(think(cbEv('нет-такого-экрана')).action, 'reply',
+  'неизвестный payload не должен ронять сценарий');
+
+// ─── 5. Сборка ответов после обращения к БД и API ──────────────────────────
+const ordItems = run(orderReply, {
+  json: { id: 77 },
+  prev: {
+    'Вернуть событие': ev({}),
+    'Сценарий': { order: { product_title: 'Кофемашина «Утро»', qty: 2, total_rub: 49800, phone: '+79001234567' } },
+  },
+  env: { ADMIN_IDS: '111, 222' },
 });
-assert.equal(grp.length, 1, 'ONLY_DIALOGS=false должен пропускать групповые чаты');
+assert.equal(ordItems.length, 3, 'подтверждение клиенту + два уведомления админам');
+assert.ok(ordItems[0].json.body.text.includes('№77'));
+assert.deepEqual(ordItems.slice(1).map((i) => i.json.api_query.user_id), ['111', '222']);
+assert.equal(run(orderReply, { json: { id: 1 }, prev: {
+  'Вернуть событие': ev({}), 'Сценарий': { order: { product_title: 'x', qty: 1, total_rub: 1, phone: '+7' } } } }).length,
+  1, 'пустой ADMIN_IDS не должен ломать оформление заказа');
 
-// --- 3. webhook разбирает то же событие в ту же форму ----------------------
-const viaHook = run(parseHook, { items: [{ body: dialogMsg('m2', '/start') }] });
-assert.deepEqual(viaHook[0].json, out[0].json, 'polling и webhook обязаны давать одну структуру');
+const rates = run(ratesReply, {
+  json: { Date: '2026-09-05T11:30:00+03:00', Valute: {
+    USD: { Name: 'Доллар США', Value: 90.5, Previous: 91 },
+    EUR: { Name: 'Евро', Value: 99.1, Previous: 98 },
+    CNY: { Name: 'Юань', Value: 12.3, Previous: 12.2 } } },
+  prev: { 'Вернуть событие': cbEv('rates') },
+})[0].json;
+assert.equal(rates.api_path, 'answers');
+assert.ok(rates.body.message.text.includes('90.50') && rates.body.message.text.includes('05.09.2026'));
 
-// --- 4. callback: dedup_key из callback_id --------------------------------
-const cb = run(parseHook, {
-  items: [{ body: { update_type: 'message_callback', timestamp: 2,
-    callback: { callback_id: 'cb1', payload: 'catalog', user: { user_id: 7, first_name: 'Никита' } },
-    message: { recipient: { chat_type: 'dialog', chat_id: 42, user_id: 7 } } } }],
-});
-assert.equal(cb[0].json.kind, 'callback');
-assert.equal(cb[0].json.dedup_key, 'cb:cb1');
+// ЦБ отдаёт JSON под расширением .js: если нода вернёт тело строкой,
+// экран курса всё равно обязан собраться.
+const ratesRaw = run(ratesReply, {
+  json: { data: JSON.stringify({ Date: '2026-09-05T11:30:00+03:00', Valute: {
+    USD: { Name: 'Доллар США', Value: 90.5, Previous: 91 } } }) },
+  prev: { 'Вернуть событие': cbEv('rates') },
+})[0].json;
+assert.ok(ratesRaw.body.message.text.includes('90.50'), 'курс должен разбираться и из строки');
 
-// --- 5. bot_started трактуется как /start ---------------------------------
-const started = run(parseHook, {
-  items: [{ body: { update_type: 'bot_started', timestamp: 3,
-    message: { recipient: { chat_type: 'dialog', chat_id: 42, user_id: 7 } },
-    user: { user_id: 7, first_name: 'Н' } } }],
-});
-assert.equal(started[0].json.text, '/start');
+const empty = run(ordersReply, { items: [{ success: true }], prev: { 'Вернуть событие': cbEv('myorders') } })[0].json;
+assert.ok(empty.body.message.text.includes('пока нет'), 'пустой список заказов не должен падать');
+const some = run(ordersReply, {
+  items: [{ id: 5, product_title: 'Термос', qty: 1, total_rub: 1890, status: 'new', created_at: '2026-09-05T10:00:00Z' }],
+  prev: { 'Вернуть событие': cbEv('myorders') },
+})[0].json;
+assert.ok(some.body.message.text.includes('№5') && some.body.message.text.includes('Термос'));
 
-// --- 6. сообщение -> POST /messages с клавиатурой --------------------------
-const main = run(menu, { json: { kind: 'message', chat_id: 42, name: 'Никита', text: '/start' } })[0].json;
-assert.equal(main.api_path, 'messages');
-assert.equal(main.api_query.chat_id, '42');
-assert.ok(main.body.text.includes('Никита'), 'имя подставляется вместо {name}');
-const kb = main.body.attachments.find((a) => a.type === 'inline_keyboard');
-assert.ok(kb && kb.payload.buttons.length >= 2);
-for (const row of kb.payload.buttons) {
-  for (const b of row) {
-    assert.ok(b.text, 'у каждой кнопки обязателен text');
-    if (b.type === 'callback') assert.ok(b.payload, 'у callback-кнопки обязателен payload');
-    if (b.type === 'link') assert.ok(b.url, 'у link-кнопки обязателен url');
-  }
-}
-
-// --- 7. callback -> POST /answers, сообщение меняется на месте -------------
-const ans = run(menu, { json: { kind: 'callback', chat_id: 42, name: 'Н', payload: 'catalog', callback_id: 'cb1' } })[0].json;
-assert.equal(ans.api_path, 'answers');
-assert.equal(ans.api_query.callback_id, 'cb1');
-assert.ok(ans.body.message.attachments[0].payload.buttons.flat().some((b) => b.payload === 'main'),
-  'в подменю должна быть кнопка «Назад»');
-
-// --- 8. динамический экран и фолбэк ---------------------------------------
-assert.ok(run(menu, { json: { kind: 'callback', chat_id: 42, name: 'Н', payload: 'item:b', callback_id: 'c' } })[0].json.body.message.text.includes('B'));
-assert.ok(run(menu, { json: { kind: 'callback', chat_id: 42, name: 'Н', payload: 'нет-такого', callback_id: 'c' } })[0].json.body.message.text.length > 0,
-  'неизвестный payload должен падать в главное меню, а не ронять сценарий');
-
-// --- 9. ветка «эхо» -------------------------------------------------------
-const e = run(echo, { json: { kind: 'message', chat_id: 42, name: 'Н', text: 'эхо тест 123' } })[0].json;
-assert.ok(e.body.text.includes('тест 123') && !e.body.text.includes('эхо тест'), 'префикс «эхо » срезается');
-
-// --- 10. структурные инварианты сценариев ---------------------------------
+// ─── 6. Структурные инварианты ─────────────────────────────────────────────
 // Параметры Postgres обязаны передаваться массивом: строка через запятую
 // разъезжается на тексте пользователя с запятой.
 for (const n of core.nodes.filter((x) => x.type === 'n8n-nodes-base.postgres')) {
   const qr = n.parameters.options?.queryReplacement;
   if (qr !== undefined) assert.match(qr, /^=\{\{\s*\[/, `${n.name}: queryReplacement должен быть массивом`);
 }
-// Дубль обязан обрываться до отправки ответа.
 assert.deepEqual(core.connections['Новое событие?'].main[1], [],
-  'ложная ветка «Новое событие?» должна быть пустой');
-// Ошибка вызова движка не должна маскироваться под успех.
+  'ложная ветка «Новое событие?» должна быть пустой — иначе бот ответит на дубль');
 for (const wf of [poll, hook]) {
   assert.equal(nodeOf(wf, 'Передать в движок').onError, undefined,
     `${wf.name}: ошибка вызова движка не должна подавляться`);
-}
-// Оба источника обязаны звать один и тот же движок.
-for (const wf of [poll, hook]) {
   assert.equal(nodeOf(wf, 'Передать в движок').parameters.workflowId.value, core.id);
 }
-// Опрос подтверждает marker даже при нуле апдейтов, иначе очередь MAX растёт.
 assert.ok(poll.connections['GET /updates'].main[0].some((c) => c.node === 'Сохранить marker'),
   '«Сохранить marker» должен висеть прямо на GET /updates, а не за разбором');
+// Все четыре ветки Switch обязаны сходиться на одной отправке.
+for (const b of core.connections['Что дальше?'].main) assert.equal(b.length, 1);
+assert.equal(nodeOf(core, 'Выбрать заказы').alwaysOutputData, true,
+  'пустой список заказов должен доходить до сборки ответа');
 
-console.log('OK: 10 групп проверок пройдено');
+console.log('OK: 6 групп проверок пройдено');

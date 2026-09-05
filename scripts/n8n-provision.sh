@@ -57,8 +57,10 @@ echo "== Активация (BOT_MODE=$BOT_MODE)"
 "${N8N[@]}" update:workflow --id=$INACTIVE_SRC  --active=false >/dev/null
 echo "   движок: $CORE_ID, источник: $ACTIVE_SRC, выключен: $INACTIVE_SRC"
 
-echo "== Перезапуск n8n, чтобы применить активацию"
-"${DC[@]}" restart n8n >/dev/null
+# Именно up -d, а не restart: restart переиспользует окружение уже созданного
+# контейнера, и правки в .env (ADMIN_IDS, токен, MAX_API_BASE_URL) не доезжают.
+echo "== Пересоздание n8n, чтобы применить активацию и свежий .env"
+"${DC[@]}" up -d --force-recreate n8n >/dev/null
 # Проверяем изнутри контейнера: в проде порт наружу не проброшен.
 until "${DC[@]}" exec -T n8n wget -q -O /dev/null http://localhost:5678/healthz 2>/dev/null; do
   sleep 3
