@@ -4,6 +4,7 @@
 # Использование:
 #   scripts/n8n-executions.sh [local|prod] [N]       последние N выполнений
 #   scripts/n8n-executions.sh [local|prod] stats     сводка по данным бота
+#   scripts/n8n-executions.sh [local|prod] requests  заявки на звонок (простой бот)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -23,6 +24,14 @@ if [ "$ARG" = "stats" ]; then
     -c "select update_type as тип, count(*) as событий from bot_events group by 1 order by 2 desc;" \
     -c "select marker, lease_until > now() as опрос_идёт, updated_at from bot_state;" \
     -c "select count(*) as ошибок_отправки, max(created_at) as последняя from bot_send_failures;"
+  exit 0
+fi
+
+if [ "$ARG" = "requests" ]; then
+  psql_app \
+    -c "select id, created_at as когда, name as имя, username as ник, coalesce(phone, message) as телефон_или_текст, status as статус
+          from callback_requests order by id desc limit 20;" \
+    -c "select user_id, name as имя, username as ник, last_seen as был from bot_users order by last_seen desc limit 10;"
   exit 0
 fi
 

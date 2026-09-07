@@ -22,7 +22,7 @@ DC_PROD  := $(COMPOSE) --env-file .env -f docker/docker-compose.prod.yml
         logs-local logs-prod status-local status-prod \
         migrate migrate-prod provision provision-prod \
         subscribe unsubscribe subscriptions \
-        executions stats test check bot-info bot-updates bot-reset \
+        executions stats requests test check bot-info bot-updates bot-reset \
         dump restore dump-prod restore-prod db-shell db-vacuum \
         clean clean-prod
 
@@ -107,6 +107,9 @@ executions: ## Последние выполнения сценариев
 
 stats: ## Сводка по данным бота: пользователи, события, ошибки отправки
 	@scripts/n8n-executions.sh local stats
+
+requests: ## Заявки «перезвоните мне» из простого бота и user_id написавших
+	@scripts/n8n-executions.sh local requests
 
 bot-info: ## Показать данные бота
 	@scripts/max-api.sh me

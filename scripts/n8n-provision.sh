@@ -7,9 +7,11 @@
 # Второй источник принудительно выключается: они делят одну очередь обновлений
 # MAX и, работая вместе, будут отбирать апдейты друг у друга.
 #
-# Движок (max-bot-core) и отправка (max-bot-send) включаются всегда: в n8n 2.x
-# сценарий с Execute Workflow Trigger обязан быть активным, иначе вызов падает с
-# "Workflow is not active and cannot be executed". Админка контента (формы)
+# Движки (max-bot-core, max-bot-simple) и отправка (max-bot-send) включаются
+# всегда: в n8n 2.x сценарий с Execute Workflow Trigger обязан быть активным,
+# иначе вызов падает с "Workflow is not active and cannot be executed". Какой
+# движок получит апдейт, источник решает сам по BOT_SCENARIO из .env
+# (demo — с каталогом и заказами, simple — без кода). Админка контента (формы)
 # тоже всегда активна — она за Basic Auth.
 #
 # Использование: scripts/n8n-provision.sh [local|prod]
@@ -26,6 +28,7 @@ DC=(docker compose --env-file .env -f "$COMPOSE_FILE")
 N8N=("${DC[@]}" exec -T n8n n8n)
 
 CORE_ID=maxbotcore000001
+SIMPLE_ID=maxbotsimp000001
 SEND_ID=maxbotsend000001
 ADMIN_ID=maxbotadmn000001
 POLL_ID=maxbotpoll000001
@@ -43,6 +46,11 @@ case "$BOT_MODE" in
     ;;
   *) echo "BOT_MODE должен быть polling или webhook, а не '$BOT_MODE'" >&2; exit 1 ;;
 esac
+BOT_SCENARIO="${BOT_SCENARIO:-demo}"
+case "$BOT_SCENARIO" in
+  demo|simple) ;;
+  *) echo "BOT_SCENARIO должен быть demo или simple, а не '$BOT_SCENARIO'" >&2; exit 1 ;;
+esac
 # Формы админки контента торчат наружу как /form/..., поэтому без пароля не поднимаем.
 [ -n "${ADMIN_FORM_USER:-}" ] && [ -n "${ADMIN_FORM_PASSWORD:-}" ] || {
   echo "Нужны ADMIN_FORM_USER и ADMIN_FORM_PASSWORD в .env — логин к формам админки контента" >&2; exit 1; }
@@ -59,13 +67,15 @@ for f in workflows/*.json; do
   "${N8N[@]}" import:workflow --input="/workflows/$(basename "$f")" 2>&1 | tail -1
 done
 
-echo "== Активация (BOT_MODE=$BOT_MODE)"
+echo "== Активация (BOT_MODE=$BOT_MODE, BOT_SCENARIO=$BOT_SCENARIO)"
 "${N8N[@]}" update:workflow --id=$CORE_ID       --active=true  >/dev/null
+"${N8N[@]}" update:workflow --id=$SIMPLE_ID     --active=true  >/dev/null
 "${N8N[@]}" update:workflow --id=$SEND_ID       --active=true  >/dev/null
 "${N8N[@]}" update:workflow --id=$ADMIN_ID      --active=true  >/dev/null
 "${N8N[@]}" update:workflow --id=$ACTIVE_SRC    --active=true  >/dev/null
 "${N8N[@]}" update:workflow --id=$INACTIVE_SRC  --active=false >/dev/null
-echo "   движок: $CORE_ID, отправка: $SEND_ID, админка: $ADMIN_ID"
+echo "   движки: $CORE_ID (demo), $SIMPLE_ID (simple); в работе: $BOT_SCENARIO"
+echo "   отправка: $SEND_ID, админка: $ADMIN_ID"
 echo "   источник: $ACTIVE_SRC, выключен: $INACTIVE_SRC"
 
 # Именно up -d, а не restart: restart переиспользует окружение уже созданного

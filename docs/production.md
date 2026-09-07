@@ -156,6 +156,7 @@ make provision-prod
 Именование переменных выровнено по `banword-max-bot` и `culture-max-bot`:
 `MAX_API_BASE_URL`, `MAX_CA_BUNDLE`, `BOT_MODE`, `WEBHOOK_HOST`, `WEBHOOK_PATH`,
 `WEBHOOK_SECRET`, `LOG_LEVEL`, `DB_*`, `POSTGRES_*`, `ADMIN_IDS`,
+`BOT_SCENARIO` (свой, `demo`/`simple` — какой движок отвечает),
 `MAX_API_RETRY_*`, источники образов через `POSTGRES_IMAGE` / `REDIS_IMAGE` /
 `N8N_IMAGE`. Токен назван `MAX_BOT_TOKEN` — как в `culture-max-bot`
 (в `banword-max-bot` он `BOT_TOKEN`).

@@ -11,6 +11,7 @@ const send = load('workflows/max-bot-send.json');
 const admin = load('workflows/max-bot-admin.json');
 const poll = load('workflows/max-bot-polling.json');
 const hook = load('workflows/max-bot-webhook.json');
+const simple = load('workflows/max-bot-simple.json');
 const seed = load('db/seed/bot_content.json');
 
 const nodeOf = (wf, name) => {
@@ -268,7 +269,7 @@ assert.ok(PRODUCTS.every((p) => /^[a-z0-9_-]+$/.test(p.id)), 'id товара п
 // ─── 7. Структурные инварианты ─────────────────────────────────────────────
 // Параметры Postgres обязаны передаваться массивом: строка через запятую
 // разъезжается на тексте пользователя с запятой.
-for (const wf of [core, send, admin]) {
+for (const wf of [core, send, admin, simple]) {
   for (const n of wf.nodes.filter((x) => x.type === 'n8n-nodes-base.postgres')) {
     const qr = n.parameters.options?.queryReplacement;
     if (qr !== undefined) assert.match(qr, /^=\{\{\s*\[/, `${wf.name} / ${n.name}: queryReplacement должен быть массивом`);
@@ -279,7 +280,10 @@ assert.deepEqual(core.connections['Новое событие?'].main[1], [],
 for (const wf of [poll, hook]) {
   assert.equal(nodeOf(wf, 'Передать в движок').onError, undefined,
     `${wf.name}: ошибка вызова движка не должна подавляться`);
-  assert.equal(nodeOf(wf, 'Передать в движок').parameters.workflowId.value, core.id);
+  // Движок выбирается по BOT_SCENARIO: выражение обязано знать оба id.
+  const target = nodeOf(wf, 'Передать в движок').parameters.workflowId.value;
+  assert.match(target, /^=\{\{.*BOT_SCENARIO/, `${wf.name}: движок должен выбираться по BOT_SCENARIO`);
+  assert.ok(target.includes(core.id) && target.includes(simple.id), `${wf.name}: выражение должно вести на оба движка`);
 }
 assert.ok(poll.connections['GET /updates'].main[0].some((c) => c.node === 'Сохранить marker'),
   '«Сохранить marker» должен висеть прямо на GET /updates, а не за разбором');
@@ -306,4 +310,43 @@ for (const n of admin.nodes.filter((x) => x.type === 'n8n-nodes-base.formTrigger
   assert.equal(n.parameters.authentication, 'basicAuth', `${n.name}: форма торчит наружу — только за Basic Auth`);
 }
 
-console.log('OK: 7 групп проверок пройдено');
+// ─── 8. Простой бот без кода ───────────────────────────────────────────────
+// Ни одной Code-ноды — весь смысл сценария. Экран — нода Set с text и buttons.
+assert.equal(simple.nodes.filter(isCode).length, 0, 'в простом боте не должно быть Code-нод');
+const sw = nodeOf(simple, 'Какая кнопка?');
+assert.equal(sw.parameters.options.fallbackOutput, 'extra', 'всё нераспознанное должно уходить в меню, а не теряться');
+const swOut = simple.connections['Какая кнопка?'].main;
+assert.equal(swOut.length, sw.parameters.rules.values.length + 1, 'каждое правило и запасной выход должны быть подключены');
+assert.ok(swOut.every((b) => b.length === 1), 'у каждого выхода «Какая кнопка?» ровно одна цель');
+assert.equal(swOut.at(-1)[0].node, 'Экран: Главное меню', 'запасной выход ведёт в главное меню');
+// payload, на который есть правило в Switch
+const routed = new Set(sw.parameters.rules.values
+  .flatMap((r) => r.conditions.conditions)
+  .filter((c) => c.leftValue.includes('$json.payload'))
+  .map((c) => c.rightValue));
+const field = (n, name) => n.parameters.assignments.assignments.find((a) => a.name === name)?.value;
+const screens = simple.nodes.filter((n) => n.name.startsWith('Экран: '));
+assert.ok(screens.length >= 5, 'ожидаются экраны меню, компания, часы, контакты, звонок, спасибо');
+for (const n of screens) {
+  assert.equal(n.type, 'n8n-nodes-base.set', `${n.name}: экран — это нода Set`);
+  const text = field(n, 'text');
+  assert.ok(text && text.trim(), `${n.name}: пустой текст`);
+  if (text.includes('{{')) assert.ok(text.startsWith('='), `${n.name}: {{ }} без «=» уйдёт пользователю как есть`);
+  const rows = JSON.parse(field(n, 'buttons'));
+  assert.ok(Array.isArray(rows) && rows.every(Array.isArray), `${n.name}: buttons — массив рядов`);
+  for (const b of rows.flat()) {
+    assert.ok(b.type && b.text, `${n.name}: у кнопки нужны type и text`);
+    if (b.type === 'callback' && b.payload !== 'main') {
+      assert.ok(routed.has(b.payload), `${n.name}: кнопка «${b.text}» ведёт на payload «${b.payload}», для которого нет правила в «Какая кнопка?»`);
+    }
+  }
+  assert.ok(reaches(simple, n.name, 'Ответить'), `${n.name}: экран не доходит до «Ответить»`);
+}
+assert.ok(reaches(simple, 'Записать заявку', 'Сообщить админам'), 'заявка должна уходить админам');
+assert.ok(reaches(simple, 'Записать заявку', 'Ответить'), 'клиент должен получить подтверждение заявки');
+assert.deepEqual(simple.connections['Новое событие?'].main[1], [], 'дубль события не должен получать ответ');
+for (const name of ['Ответить', 'Сообщить админам']) {
+  assert.equal(nodeOf(simple, name).parameters.workflowId.value, send.id, `${name}: отправка только через max-bot-send`);
+}
+
+console.log('OK: 8 групп проверок пройдено');

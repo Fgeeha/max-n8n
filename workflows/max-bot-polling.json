@@ -107,7 +107,7 @@
       "parameters": {
         "workflowId": {
           "__rl": true,
-          "value": "maxbotcore000001",
+          "value": "={{ $env.BOT_SCENARIO === 'simple' ? 'maxbotsimp000001' : 'maxbotcore000001' }}",
           "mode": "id"
         },
         "mode": "each",
@@ -122,7 +122,9 @@
       "position": [
         240,
         160
-      ]
+      ],
+      "notes": "BOT_SCENARIO в .env: demo — движок с каталогом, simple — бот без кода",
+      "notesInFlow": true
     },
     {
       "parameters": {

@@ -1,0 +1,916 @@
+{
+  "id": "maxbotsimp000001",
+  "versionId": "00000000-0000-4000-8000-otsimp000001",
+  "name": "MAX bot — простой: информация + заявка на звонок (без кода)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Простой бот без кода: информация + заявка на звонок\n\nКнопка в MAX несёт `payload` — короткое слово. Блок **«Какая кнопка?»** смотрит на него и отправляет в нужный **«Экран: …»**. Экран — это две строчки: **text** (что написать) и **buttons** (какие кнопки показать). Дальше всё уходит в готовый блок **«Ответить»**.\n\n**Поменять текст или кнопки** — открыть блок «Экран: …», поправить, нажать Save.\n\n**Добавить экран** (например, «Доставка»):\n1. Скопировать блок «Экран: Режим работы», переименовать в «Экран: Доставка», написать текст и кнопки.\n2. В «Какая кнопка?» нажать **Add Routing Rule**: `payload` equals `delivery`, выход назвать «Доставка».\n3. Соединить новый выход с новым экраном, а экран — с «Ответить».\n4. На нужном экране добавить кнопку `{\"type\":\"callback\",\"text\":\"🚚 Доставка\",\"payload\":\"delivery\"}`.\n\nВсё, что не кнопка и не телефон, возвращает в главное меню.",
+        "width": 900,
+        "height": 420,
+        "color": 5
+      },
+      "id": "Заметка: как это устроено",
+      "name": "Заметка: как это устроено",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1240,
+        -560
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### Служебные блоки — не трогать\nЗащита от повторной доставки и учёт пользователей. Ведут себя одинаково во всех сценариях.",
+        "width": 1000,
+        "height": 300,
+        "color": 3
+      },
+      "id": "Заметка: служебное",
+      "name": "Заметка: служебное",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1240,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### Заявка на звонок\nЗаявкой считается **сообщение с номером телефона** (6 и больше цифр) или **отправленный контакт** (кнопка «Отправить мой номер»). Она ложится в таблицу `callback_requests` и уходит уведомлением каждому `user_id` из `ADMIN_IDS` в `.env`. Свой user_id подскажет `make requests` после первого сообщения боту.",
+        "width": 1000,
+        "height": 260,
+        "color": 4
+      },
+      "id": "Заметка: заявка",
+      "name": "Заметка: заявка",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1080,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "Событие от источника",
+      "name": "Событие от источника",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -1200,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO bot_events\n    (dedup_key, update_type, user_id, chat_id, chat_type, text, payload, raw)\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)\nON CONFLICT (dedup_key) DO NOTHING\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [$json.dedup_key, $json.update_type, $json.user_id, $json.chat_id, $json.chat_type, $json.text, $json.payload, JSON.stringify($json.raw)] }}"
+        }
+      },
+      "id": "Записать событие",
+      "name": "Записать событие",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -980,
+        260
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "maxbotpg000000001",
+          "name": "maxbot-postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.id !== undefined }}",
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "Новое событие?",
+      "name": "Новое событие?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -760,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO bot_users (user_id, chat_id, name, username, events_count)\nVALUES ($1, $2, $3, $4, 1)\nON CONFLICT (user_id) DO UPDATE\n   SET chat_id      = COALESCE(EXCLUDED.chat_id, bot_users.chat_id),\n       name         = EXCLUDED.name,\n       username     = COALESCE(EXCLUDED.username, bot_users.username),\n       last_seen    = now(),\n       events_count = bot_users.events_count + 1\nRETURNING user_id;",
+        "options": {
+          "queryReplacement": "={{ [$('Событие от источника').item.json.user_id, $('Событие от источника').item.json.chat_id, $('Событие от источника').item.json.name, $('Событие от источника').item.json.username] }}"
+        }
+      },
+      "id": "Обновить пользователя",
+      "name": "Обновить пользователя",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -540,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "maxbotpg000000001",
+          "name": "maxbot-postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "={{ JSON.stringify($('Событие от источника').first().json) }}",
+        "options": {}
+      },
+      "id": "Вернуть событие",
+      "name": "Вернуть событие",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -320,
+        200
+      ],
+      "notes": "Ноды Postgres отдают результат запроса, а не событие — возвращаем исходное.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "leftValue": "={{ $json.payload ?? \"\" }}",
+                    "rightValue": "about"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "О компании"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "leftValue": "={{ $json.payload ?? \"\" }}",
+                    "rightValue": "hours"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Режим работы"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "leftValue": "={{ $json.payload ?? \"\" }}",
+                    "rightValue": "contacts"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Контакты"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "leftValue": "={{ $json.payload ?? \"\" }}",
+                    "rightValue": "callme"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Перезвоните мне"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "operator": {
+                      "type": "string",
+                      "operation": "notEmpty"
+                    },
+                    "leftValue": "={{ $json.contact_phone ?? \"\" }}",
+                    "rightValue": ""
+                  },
+                  {
+                    "operator": {
+                      "type": "string",
+                      "operation": "regex"
+                    },
+                    "leftValue": "={{ $json.text ?? \"\" }}",
+                    "rightValue": "([^0-9]*[0-9]){6}"
+                  }
+                ],
+                "combinator": "or"
+              },
+              "renameOutput": true,
+              "outputKey": "Заявка"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "Остальное → меню"
+        }
+      },
+      "id": "Какая кнопка?",
+      "name": "Какая кнопка?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        -80,
+        200
+      ],
+      "notes": "Один выход — один экран. Порядок правил важен: сверху вниз, первое совпадение.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "text",
+              "name": "text",
+              "value": "🏢 *О компании*\n\n«Тест Компания» — небольшая компания из Волгограда. Работаем с 2015 года, обслуживаем частных клиентов и организации.\n\nЕсли удобнее поговорить голосом — оставьте заявку, и мы перезвоним.",
+              "type": "string"
+            },
+            {
+              "id": "buttons",
+              "name": "buttons",
+              "value": "[[{\"type\":\"link\",\"text\":\"🌐 Наш сайт\",\"url\":\"https://example.ru\"}],[{\"type\":\"callback\",\"text\":\"📞 Перезвоните мне\",\"payload\":\"callme\"}],[{\"type\":\"callback\",\"text\":\"⬅️ В меню\",\"payload\":\"main\"}]]",
+              "type": "array"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "Экран: О компании",
+      "name": "Экран: О компании",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        300,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "text",
+              "name": "text",
+              "value": "🕒 *Режим работы*\n\nПн–Пт: 9:00–18:00\nСб: 10:00–15:00\nВс: выходной\n\nЗаявки, оставленные вне рабочего времени, обрабатываем на следующий рабочий день.",
+              "type": "string"
+            },
+            {
+              "id": "buttons",
+              "name": "buttons",
+              "value": "[[{\"type\":\"callback\",\"text\":\"📞 Перезвоните мне\",\"payload\":\"callme\"}],[{\"type\":\"callback\",\"text\":\"⬅️ В меню\",\"payload\":\"main\"}]]",
+              "type": "array"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "Экран: Режим работы",
+      "name": "Экран: Режим работы",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        300,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "text",
+              "name": "text",
+              "value": "📍 *Контакты*\n\nг. Волгоград, ул. Мира, 1\nТелефон: +7 (8442) 00-00-00\nПочта: info@example.ru",
+              "type": "string"
+            },
+            {
+              "id": "buttons",
+              "name": "buttons",
+              "value": "[[{\"type\":\"clipboard\",\"text\":\"📋 Скопировать телефон\",\"payload\":\"+78442000000\"}],[{\"type\":\"callback\",\"text\":\"📞 Перезвоните мне\",\"payload\":\"callme\"}],[{\"type\":\"callback\",\"text\":\"⬅️ В меню\",\"payload\":\"main\"}]]",
+              "type": "array"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "Экран: Контакты",
+      "name": "Экран: Контакты",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        300,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "text",
+              "name": "text",
+              "value": "📞 *Заявка на звонок*\n\nНажмите «Отправить мой номер» или напишите телефон одним сообщением — мы перезвоним в рабочее время.",
+              "type": "string"
+            },
+            {
+              "id": "buttons",
+              "name": "buttons",
+              "value": "[[{\"type\":\"request_contact\",\"text\":\"📱 Отправить мой номер\"}],[{\"type\":\"callback\",\"text\":\"⬅️ В меню\",\"payload\":\"main\"}]]",
+              "type": "array"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "Экран: Перезвоните мне",
+      "name": "Экран: Перезвоните мне",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        300,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "text",
+              "name": "text",
+              "value": "=Здравствуйте, {{ $json.name }}! 👋\n\nЭто бот компании «Тест Компания». Выберите, что вас интересует, или оставьте заявку — мы перезвоним.",
+              "type": "string"
+            },
+            {
+              "id": "buttons",
+              "name": "buttons",
+              "value": "[[{\"type\":\"callback\",\"text\":\"🏢 О компании\",\"payload\":\"about\"},{\"type\":\"callback\",\"text\":\"🕒 Режим работы\",\"payload\":\"hours\"}],[{\"type\":\"callback\",\"text\":\"📍 Контакты\",\"payload\":\"contacts\"}],[{\"type\":\"callback\",\"text\":\"📞 Перезвоните мне\",\"payload\":\"callme\"}]]",
+              "type": "array"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "Экран: Главное меню",
+      "name": "Экран: Главное меню",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        300,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "maxbotsend000001",
+          "mode": "id"
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "Ответить",
+      "name": "Ответить",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        720,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO callback_requests (user_id, chat_id, name, username, phone, message)\nVALUES ($1, $2, $3, $4, $5, $6)\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [$json.user_id, $json.chat_id, $json.name, $json.username, $json.contact_phone, ($json.text ?? '').slice(0, 1000)] }}"
+        }
+      },
+      "id": "Записать заявку",
+      "name": "Записать заявку",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        300,
+        540
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "maxbotpg000000001",
+          "name": "maxbot-postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "text",
+              "name": "text",
+              "value": "=✅ Спасибо, {{ $('Вернуть событие').item.json.name }}! Заявка №{{ $json.id }} принята — перезвоним в рабочее время.",
+              "type": "string"
+            },
+            {
+              "id": "buttons",
+              "name": "buttons",
+              "value": "[[{\"type\":\"callback\",\"text\":\"⬅️ В меню\",\"payload\":\"main\"}]]",
+              "type": "array"
+            },
+            {
+              "id": "chat_id",
+              "name": "chat_id",
+              "value": "={{ $('Вернуть событие').item.json.chat_id }}",
+              "type": "number"
+            },
+            {
+              "id": "user_id",
+              "name": "user_id",
+              "value": "={{ $('Вернуть событие').item.json.user_id }}",
+              "type": "number"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
+      },
+      "id": "Экран: Спасибо",
+      "name": "Экран: Спасибо",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        560,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "admin_id",
+              "name": "admin_id",
+              "value": "={{ ($env.ADMIN_IDS ?? '').replaceAll(' ', '').split(',') }}",
+              "type": "array"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
+      },
+      "id": "Кому сообщить",
+      "name": "Кому сообщить",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        560,
+        640
+      ],
+      "notes": "ADMIN_IDS из .env: user_id через запятую",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "admin_id",
+        "options": {}
+      },
+      "id": "По одному админу",
+      "name": "По одному админу",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        780,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              },
+              "leftValue": "={{ $json.admin_id ?? \"\" }}",
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "Админ указан?",
+      "name": "Админ указан?",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        1000,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "text",
+              "name": "text",
+              "value": "=🔔 *Новая заявка №{{ $('Записать заявку').first().json.id }}*\nКлиент: {{ $('Вернуть событие').first().json.name }}{{ $('Вернуть событие').first().json.username ? ' @' + $('Вернуть событие').first().json.username : '' }}\nТелефон: {{ $('Вернуть событие').first().json.contact_phone ?? 'в сообщении' }}\nСообщение: {{ $('Вернуть событие').first().json.text || '—' }}",
+              "type": "string"
+            },
+            {
+              "id": "buttons",
+              "name": "buttons",
+              "value": "[]",
+              "type": "array"
+            },
+            {
+              "id": "user_id",
+              "name": "user_id",
+              "value": "={{ $json.admin_id }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
+      },
+      "id": "Сообщение админу",
+      "name": "Сообщение админу",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1220,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "maxbotsend000001",
+          "mode": "id"
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "Сообщить админам",
+      "name": "Сообщить админам",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1460,
+        640
+      ]
+    }
+  ],
+  "connections": {
+    "Событие от источника": {
+      "main": [
+        [
+          {
+            "node": "Записать событие",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Записать событие": {
+      "main": [
+        [
+          {
+            "node": "Новое событие?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Новое событие?": {
+      "main": [
+        [
+          {
+            "node": "Обновить пользователя",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Обновить пользователя": {
+      "main": [
+        [
+          {
+            "node": "Вернуть событие",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Вернуть событие": {
+      "main": [
+        [
+          {
+            "node": "Какая кнопка?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Какая кнопка?": {
+      "main": [
+        [
+          {
+            "node": "Экран: О компании",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Экран: Режим работы",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Экран: Контакты",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Экран: Перезвоните мне",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Записать заявку",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Экран: Главное меню",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Экран: О компании": {
+      "main": [
+        [
+          {
+            "node": "Ответить",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Экран: Режим работы": {
+      "main": [
+        [
+          {
+            "node": "Ответить",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Экран: Контакты": {
+      "main": [
+        [
+          {
+            "node": "Ответить",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Экран: Перезвоните мне": {
+      "main": [
+        [
+          {
+            "node": "Ответить",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Экран: Главное меню": {
+      "main": [
+        [
+          {
+            "node": "Ответить",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Записать заявку": {
+      "main": [
+        [
+          {
+            "node": "Экран: Спасибо",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Кому сообщить",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Экран: Спасибо": {
+      "main": [
+        [
+          {
+            "node": "Ответить",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Кому сообщить": {
+      "main": [
+        [
+          {
+            "node": "По одному админу",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "По одному админу": {
+      "main": [
+        [
+          {
+            "node": "Админ указан?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Админ указан?": {
+      "main": [
+        [
+          {
+            "node": "Сообщение админу",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Сообщение админу": {
+      "main": [
+        [
+          {
+            "node": "Сообщить админам",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "active": false,
+  "pinData": {},
+  "tags": []
+}

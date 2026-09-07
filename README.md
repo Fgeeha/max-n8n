@@ -7,6 +7,7 @@ No-code платформа для бота MAX на n8n: меню, кнопки,
 Postgres, Redis, queue mode, вебхуки, идемпотентность, миграции.
 
 - Что умеет демо-бот и как добавить своё — [`docs/scenarios.md`](docs/scenarios.md)
+- Бот без единой строки кода: экраны + заявка на звонок — [`docs/simple-bot.md`](docs/simple-bot.md)
 - Итоги проверки гипотезы — [`docs/verdict.md`](docs/verdict.md)
 - Развёртывание в проде — [`docs/production.md`](docs/production.md)
 - Особенности Bot API MAX — [`docs/max-bot-api.md`](docs/max-bot-api.md)
@@ -19,6 +20,7 @@ Postgres, Redis, queue mode, вебхуки, идемпотентность, м�
 | `docker/docker-compose.local.yml` | n8n + postgres, обычный режим, polling |
 | `docker/docker-compose.prod.yml` | n8n main + worker + postgres + redis, queue mode, вебхук |
 | `workflows/max-bot-core.json` | движок: журнал, пользователь, логика экранов, каталог, заказы |
+| `workflows/max-bot-simple.json` | второй движок, без кода: информационные экраны + заявка «перезвоните мне»; включается `BOT_SCENARIO=simple` |
 | `workflows/max-bot-send.json` | переиспользуемый элемент «Отправить в MAX»: `/messages` или `/answers`, журнал ошибок — без кода |
 | `workflows/max-bot-admin.json` | админка контента: две формы n8n за Basic Auth пишут экраны и товары в базу — без кода |
 | `workflows/max-bot-polling.json` | источник апдейтов: `GET /updates` |
@@ -127,6 +129,21 @@ make provision          # залить сценарии и включить ис
 
 Логика переходов (форма заказа, каталог, команды) — одна нода **«Сценарий»**
 в `max-bot-core`. Подробнее — в [`docs/scenarios.md`](docs/scenarios.md).
+
+### Бот без кода
+
+Второй движок, `max-bot-simple`, собран только из готовых блоков n8n — ни одной
+ноды Code. Каждый экран — блок Set с полями `text` и `buttons`, переходы —
+блок Switch по `payload` кнопки. Бот показывает информацию и принимает заявку
+«перезвоните мне» (номер текстом или кнопкой «Отправить мой номер»): заявка
+ложится в `callback_requests` и уходит каждому из `ADMIN_IDS`.
+
+```env
+BOT_SCENARIO=simple   # затем make provision; demo — вернуть демо-бот с каталогом
+```
+
+Как поменять тексты и добавить экран без программиста —
+[`docs/simple-bot.md`](docs/simple-bot.md). Заявки — `make requests`.
 
 ## Безопасность
 
